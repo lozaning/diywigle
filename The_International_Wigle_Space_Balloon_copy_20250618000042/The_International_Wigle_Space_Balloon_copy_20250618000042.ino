@@ -7,6 +7,7 @@
 #include <TinyGPS++.h>
 #include <stdlib.h>
 #include <string.h>
+#include <SSD1306Wire.h>
 
 // ─── Pin Definitions ──────────────────────────────────────────────────────────
 #define SCK_GPIO        5
@@ -26,6 +27,11 @@
 #define I2C_SCL         22
 #define AXP192_ADDRESS  0x34
 
+// OLED Display
+#define OLED_ADDRESS    0x3C
+#define OLED_SDA        I2C_SDA
+#define OLED_SCL        I2C_SCL
+
 // ─── LoRaWAN OTAA Keys (replace with your values) ────────────────────────────
 static const u1_t PROGMEM APPEUI[8]  = {0x45, 0x50, 0x93, 0x67, 0x00, 0xF9, 0x81, 0x60};
 static const u1_t PROGMEM DEVEUI[8]  = {0x34, 0x31, 0x77, 0x19, 0xCB, 0xF9, 0x81, 0x60};
@@ -37,8 +43,15 @@ void os_getDevKey(u1_t* buf){ memcpy_P(buf, APPKEY, 16); }
 // ─── Globals ─────────────────────────────────────────────────────────────────
 TinyGPSPlus  gps;
 AXP20X_Class axp;
+SSD1306Wire  display(OLED_ADDRESS, OLED_SDA, OLED_SCL);
 bool         axp192_found = false;
 bool         lorawanJoined = false;
+
+// Display state tracking
+uint16_t lastNetworksCount = 0;
+uint8_t lastSatellites = 0;
+bool lastJoinStatus = false;
+uint16_t lastScanCount = 0;
 
 // One Wi‑Fi + GPS record (ASCII MAC) - EXACTLY like original
 struct __attribute__((packed)) WifiNetwork {
@@ -99,8 +112,67 @@ void recordSeenMAC(const char *mac) {
   if (seenCount < MAX_SEEN) seenCount++;
 }
 
+// Update OLED display with current status
+void updateDisplay() {
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  
+  // Title
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 0, "T-Beam WiFi Scanner");
+  
+  // LoRa Status
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.drawString(0, 12, "LoRa: " + String(lorawanJoined ? "JOINED" : "JOINING"));
+  
+  // GPS Satellites
+  uint8_t sats = gps.satellites.value();
+  display.drawString(0, 22, "GPS Sats: " + String(sats));
+  
+  // Networks in queue
+  display.drawString(0, 32, "Queue: " + String(networksCount));
+  
+  // Last scan count
+  display.drawString(0, 42, "Last Scan: " + String(lastScanCount));
+  
+  // Battery voltage
+  float batteryVoltage = 0.0;
+  if (axp192_found) {
+    batteryVoltage = axp.getBattVoltage() / 1000.0;  // Convert mV to V
+  }
+  display.drawString(0, 52, "Batt: " + String(batteryVoltage, 2) + "V");
+  
+  display.display();
+}
+
+// Check if display needs updating
+void checkDisplayUpdate() {
+  uint8_t currentSats = gps.satellites.value();
+  bool needsUpdate = false;
+  
+  if (lastNetworksCount != networksCount) {
+    lastNetworksCount = networksCount;
+    needsUpdate = true;
+  }
+  
+  if (lastSatellites != currentSats) {
+    lastSatellites = currentSats;
+    needsUpdate = true;
+  }
+  
+  if (lastJoinStatus != lorawanJoined) {
+    lastJoinStatus = lorawanJoined;
+    needsUpdate = true;
+  }
+  
+  if (needsUpdate) {
+    updateDisplay();
+  }
+}
+
 // Process async scan results - MODIFIED to work without GPS requirement
 void processScanResults(int n) {
+  lastScanCount = n;
   // Get GPS data if available
   float lat = 0.0, lng = 0.0;
   int16_t alt = 0;
@@ -142,6 +214,9 @@ void processScanResults(int n) {
     }
   }
   Serial.printf("Networks queued: %d\n", networksCount);
+  
+  // Update display after processing scan
+  checkDisplayUpdate();
 }
 
 // Send one record LIFO or heartbeat - Enhanced with join status check
@@ -228,6 +303,7 @@ void onEvent(ev_t ev) {
       }
       lorawanJoined = true;
       LMIC_setLinkCheckMode(0);
+      checkDisplayUpdate();  // Update display when join status changes
       break;
     case EV_JOIN_FAILED:
       Serial.println("EV_JOIN_FAILED - *** JOIN ATTEMPT FAILED ***");
@@ -334,6 +410,15 @@ void setup() {
     Serial.println("AXP192 configured");
   }
 
+  // OLED Display
+  display.init();
+  display.flipScreenVertically();
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 20, "T-Beam Starting...");
+  display.display();
+
   // GPS - EXACTLY like original
   Serial1.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
@@ -396,11 +481,50 @@ void setup() {
   Serial.flush();
   
   Serial.println("Setup complete, starting operation...");
+  
+  // Initial display update
+  updateDisplay();
 }
 
-// Main loop - EXACTLY like original
+// GPS debugging variables
+unsigned long lastGPSDebug = 0;
+#define GPS_DEBUG_INTERVAL 5000  // Print GPS status every 5 seconds
+
+// Main loop - EXACTLY like original + GPS debugging
 void loop() {
-  while (Serial1.available()) gps.encode(Serial1.read());
+  bool newGPSData = false;
+  while (Serial1.available()) {
+    if (gps.encode(Serial1.read())) {
+      newGPSData = true;
+    }
+  }
+  
+  // GPS debugging every 5 seconds
+  unsigned long now = millis();
+  if (now - lastGPSDebug > GPS_DEBUG_INTERVAL) {
+    lastGPSDebug = now;
+    Serial.println("=== GPS STATUS ===");
+    Serial.printf("GPS chars processed: %lu\n", gps.charsProcessed());
+    Serial.printf("Valid sentences: %lu\n", gps.sentencesWithFix());
+    Serial.printf("Failed checksum: %lu\n", gps.failedChecksum());
+    Serial.printf("Satellites in view: %d\n", gps.satellites.value());
+    Serial.printf("Location valid: %s\n", gps.location.isValid() ? "YES" : "NO");
+    if (gps.location.isValid()) {
+      Serial.printf("Lat/Lng: %.6f, %.6f\n", gps.location.lat(), gps.location.lng());
+      Serial.printf("Altitude: %.2f m\n", gps.altitude.meters());
+      Serial.printf("HDOP: %.2f\n", gps.hdop.hdop());
+    }
+    Serial.printf("Date valid: %s\n", gps.date.isValid() ? "YES" : "NO");
+    Serial.printf("Time valid: %s\n", gps.time.isValid() ? "YES" : "NO");
+    if (newGPSData) {
+      Serial.println("*** NEW GPS DATA RECEIVED THIS CYCLE ***");
+    }
+    Serial.println("=================");
+  }
+  
+  // Check for display updates based on GPS changes
+  checkDisplayUpdate();
+  
   os_runloop_once();
   int n = WiFi.scanComplete();
   if (n >= 0) {
