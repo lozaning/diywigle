@@ -53,7 +53,7 @@ uint8_t lastSatellites = 0;
 bool lastJoinStatus = false;
 uint16_t lastScanCount = 0;
 
-// One Wi‑Fi + GPS record (ASCII MAC) - EXACTLY like original
+// One Wi‑Fi + GPS record (ASCII MAC) + device health data
 struct __attribute__((packed)) WifiNetwork {
   char     ssid[11];   // first 10 chars + '\0'
   char     mac[18];    // "AA:BB:CC:DD:EE:FF" + '\0'
@@ -65,6 +65,8 @@ struct __attribute__((packed)) WifiNetwork {
   int16_t  altitude;   // meters
   uint8_t  sats;       // satellites
   uint8_t  hdop;       // HDOP×10
+  float    battery_voltage;  // device battery voltage for health monitoring
+  uint8_t  gps_satellites;   // current GPS satellites visible (device health)
 };
 
 // Send queue backed by malloc (no PSRAM dependency) - EXACTLY like original
@@ -190,6 +192,29 @@ void processScanResults(int n) {
     Serial.println("GPS: No fix, using zeros");
   }
 
+  // Get device health data for all networks in this batch
+  float batteryVoltage = 0.0;
+  if (axp192_found) {
+    float rawVoltage = axp.getBattVoltage();
+    Serial.printf("DEBUG: Raw AXP192 voltage: %.3f\n", rawVoltage);
+    
+    // Handle different AXP library versions
+    if (rawVoltage > 100) {
+      // Library returns millivolts
+      batteryVoltage = rawVoltage / 1000.0;
+      Serial.printf("DEBUG: Converted from mV: %.3f V\n", batteryVoltage);
+    } else if (rawVoltage > 0) {
+      // Library returns volts directly
+      batteryVoltage = rawVoltage;
+      Serial.printf("DEBUG: Using direct voltage: %.3f V\n", batteryVoltage);
+    } else {
+      // Negative or zero reading - use absolute value or default
+      batteryVoltage = (rawVoltage < 0) ? -rawVoltage : 3.7;  // Default to 3.7V if invalid
+      Serial.printf("DEBUG: Invalid reading, using: %.3f V\n", batteryVoltage);
+    }
+  }
+  uint8_t currentGpsSatellites = gps.satellites.value(); // Always get current satellite count
+
   for (int i = 0; i < n; i++) {
     String ssidStr   = WiFi.SSID(i);
     String bssidStr  = WiFi.BSSIDstr(i);
@@ -210,7 +235,10 @@ void processScanResults(int n) {
       e.altitude   = alt;
       e.sats       = sats;
       e.hdop       = hdop;
-      Serial.printf("Added: %s (%s)\n", e.ssid, e.mac);
+      // Add device health data
+      e.battery_voltage = batteryVoltage;
+      e.gps_satellites = currentGpsSatellites;
+      Serial.printf("Added: %s (%s) [Batt: %.2fV, GPS Sats: %d]\n", e.ssid, e.mac, batteryVoltage, currentGpsSatellites);
     }
   }
   Serial.printf("Networks queued: %d\n", networksCount);
@@ -268,6 +296,11 @@ void do_send(osjob_t* j) {
     Serial.printf("   Altitude: %d meters\n", e.altitude);
     Serial.printf("   Satellites: %d\n", e.sats);
     Serial.printf("   HDOP: %d (hdop*10)\n", e.hdop);
+    Serial.printf("   Battery Voltage: %.3f V (raw bytes: ", e.battery_voltage);
+    uint8_t* batt_bytes = (uint8_t*)&e.battery_voltage;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", batt_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   GPS Satellites (Health): %d\n", e.gps_satellites);
     
     // HEX DUMP OF ENTIRE PAYLOAD
     Serial.printf("*** COMPLETE PAYLOAD HEX DUMP ***\n");

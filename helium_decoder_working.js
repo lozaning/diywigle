@@ -1,13 +1,13 @@
-// Helium Console Decoder - WORKING VERSION for T-Beam WiFi Data
-// This decoder properly parses the 44-byte payload from the T-Beam LoRaWAN firmware
-// Updated to fix the byte length check (was 45, now 44) which was preventing GPS parsing
+// Helium Console Decoder - WORKING VERSION for T-Beam WiFi Data + Health Data
+// Updated to parse 49-byte payload with battery voltage and GPS satellites for health monitoring
+// Payload now includes device health data piggybacked on network transmissions
 
 function Decoder(bytes, port) {
   if (bytes.length === 0) return {};
   
   const out = {};
 
-  if (port === 1 && bytes.length >= 44) {
+  if (port === 1 && bytes.length >= 49) {
     let i = 0;
     
     // SSID (11 bytes, null-terminated)
@@ -56,6 +56,13 @@ function Decoder(bytes, port) {
     // Satellites & HDOP
     out.sats = bytes[i++];
     out.hdop = bytes[i++];
+    
+    // Device Health Data (battery voltage and GPS satellites)
+    const battBytes = new Uint8Array([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+    out.battery_voltage = new DataView(battBytes.buffer).getFloat32(0, true);
+    i += 4;
+    
+    out.gps_satellites = bytes[i++];
   }
 
   return out;

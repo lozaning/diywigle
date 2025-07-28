@@ -1,6 +1,0 @@
-{
-  "dev_eui": "{{dev_eui}}",
-  "decoded": {
-    "payload": {{decoded.payload}}
-  }
-}
