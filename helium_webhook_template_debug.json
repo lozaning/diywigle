@@ -1,0 +1,33 @@
+{
+  "dev_eui": "{{dev_eui}}",
+  "name": "{{name}}",
+  "rssi": {{#rssi}}{{rssi}}{{/rssi}}{{^rssi}}-999{{/rssi}},
+  "snr": {{#snr}}{{snr}}{{/snr}}{{^snr}}-999{{/snr}},
+  "frequency": {{#frequency}}{{frequency}}{{/frequency}}{{^frequency}}0{{/frequency}},
+  "decoded": {
+    "payload": {
+      "ssid": "{{decoded.payload.ssid}}",
+      "mac": "{{decoded.payload.mac}}",
+      "rssi": {{decoded.payload.rssi}},
+      "channel": {{decoded.payload.channel}},
+      "encryption": "{{decoded.payload.encryption}}",
+      "latitude": {{decoded.payload.latitude}},
+      "longitude": {{decoded.payload.longitude}},
+      "altitude": {{decoded.payload.altitude}},
+      "sats": {{decoded.payload.sats}},
+      "hdop": {{decoded.payload.hdop}},
+      "battery_voltage": {{decoded.payload.battery_voltage}},
+      "gps_satellites": {{decoded.payload.gps_satellites}}
+    }
+  },
+  "hotspots": [
+    {{#hotspots}}
+    {
+      "id": "{{id}}",
+      "name": "{{name}}",
+      "rssi": {{rssi}},
+      "snr": {{snr}}
+    }{{#unless @last}},{{/unless}}
+    {{/hotspots}}
+  ]
+}

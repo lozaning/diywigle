@@ -53,7 +53,7 @@ uint8_t lastSatellites = 0;
 bool lastJoinStatus = false;
 uint16_t lastScanCount = 0;
 
-// One Wi‑Fi + GPS record (ASCII MAC) - EXACTLY like original
+// One Wi‑Fi + GPS record (ASCII MAC) + device health data
 struct __attribute__((packed)) WifiNetwork {
   char     ssid[11];   // first 10 chars + '\0'
   char     mac[18];    // "AA:BB:CC:DD:EE:FF" + '\0'
@@ -65,6 +65,8 @@ struct __attribute__((packed)) WifiNetwork {
   int16_t  altitude;   // meters
   uint8_t  sats;       // satellites
   uint8_t  hdop;       // HDOP×10
+  float    battery_voltage;  // device battery voltage for health monitoring
+  uint8_t  gps_satellites;   // current GPS satellites visible (device health)
 };
 
 // Send queue backed by malloc (no PSRAM dependency) - EXACTLY like original
@@ -80,7 +82,7 @@ static uint16_t     seenHead  = 0;
 
 // LMIC job & timing - EXACTLY like original
 static osjob_t sendjob;
-#define TX_INTERVAL_SEC 30
+#define TX_INTERVAL_SEC 10
 
 // LMIC pinmap - EXACTLY like original
 const lmic_pinmap lmic_pins = {
@@ -138,7 +140,7 @@ void updateDisplay() {
   // Battery voltage
   float batteryVoltage = 0.0;
   if (axp192_found) {
-    batteryVoltage = axp.getBattVoltage() / 1000.0;  // Convert mV to V
+    batteryVoltage = axp.getBattVoltage();
   }
   display.drawString(0, 52, "Batt: " + String(batteryVoltage, 2) + "V");
   
@@ -173,7 +175,7 @@ void checkDisplayUpdate() {
 // Process async scan results - MODIFIED to work without GPS requirement
 void processScanResults(int n) {
   lastScanCount = n;
-  // Get GPS data if available
+  // Get GPS data if available - initialize to zero
   float lat = 0.0, lng = 0.0;
   int16_t alt = 0;
   uint8_t sats = 0;
@@ -189,6 +191,29 @@ void processScanResults(int n) {
   } else {
     Serial.println("GPS: No fix, using zeros");
   }
+
+  // Get device health data for all networks in this batch
+  float batteryVoltage = 0.0;
+  if (axp192_found) {
+    float rawVoltage = axp.getBattVoltage();
+    Serial.printf("DEBUG: Raw AXP192 voltage: %.3f\n", rawVoltage);
+    
+    // Handle different AXP library versions
+    if (rawVoltage > 100) {
+      // Library returns millivolts
+      batteryVoltage = rawVoltage / 1000.0;
+      Serial.printf("DEBUG: Converted from mV: %.3f V\n", batteryVoltage);
+    } else if (rawVoltage > 0) {
+      // Library returns volts directly
+      batteryVoltage = rawVoltage;
+      Serial.printf("DEBUG: Using direct voltage: %.3f V\n", batteryVoltage);
+    } else {
+      // Negative or zero reading - use absolute value or default
+      batteryVoltage = (rawVoltage < 0) ? -rawVoltage : 3.7;  // Default to 3.7V if invalid
+      Serial.printf("DEBUG: Invalid reading, using: %.3f V\n", batteryVoltage);
+    }
+  }
+  uint8_t currentGpsSatellites = gps.satellites.value(); // Always get current satellite count
 
   for (int i = 0; i < n; i++) {
     String ssidStr   = WiFi.SSID(i);
@@ -210,7 +235,10 @@ void processScanResults(int n) {
       e.altitude   = alt;
       e.sats       = sats;
       e.hdop       = hdop;
-      Serial.printf("Added: %s (%s)\n", e.ssid, e.mac);
+      // Add device health data
+      e.battery_voltage = batteryVoltage;
+      e.gps_satellites = currentGpsSatellites;
+      Serial.printf("Added: %s (%s) [Batt: %.2fV, GPS Sats: %d]\n", e.ssid, e.mac, batteryVoltage, currentGpsSatellites);
     }
   }
   Serial.printf("Networks queued: %d\n", networksCount);
@@ -249,7 +277,57 @@ void do_send(osjob_t* j) {
     WifiNetwork &e = networks[--networksCount];
     Serial.printf("*** ATTEMPTING TO SEND NETWORK DATA ***\n");
     Serial.printf("   Payload size: %d bytes\n", sizeof(e));
+    
+    // VERBOSE PAYLOAD DEBUGGING
+    Serial.printf("*** DETAILED PAYLOAD STRUCTURE ***\n");
+    Serial.printf("   SSID: '%s' (length: %d)\n", e.ssid, strlen(e.ssid));
+    Serial.printf("   MAC: '%s' (length: %d)\n", e.mac, strlen(e.mac));
+    Serial.printf("   RSSI: %d dBm\n", e.rssi);
+    Serial.printf("   Channel: %d\n", e.channel);
+    Serial.printf("   Encryption: %d\n", e.encryption);
+    Serial.printf("   Latitude: %.8f (raw bytes: ", e.latitude);
+    uint8_t* lat_bytes = (uint8_t*)&e.latitude;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", lat_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   Longitude: %.8f (raw bytes: ", e.longitude);
+    uint8_t* lon_bytes = (uint8_t*)&e.longitude;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", lon_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   Altitude: %d meters\n", e.altitude);
+    Serial.printf("   Satellites: %d\n", e.sats);
+    Serial.printf("   HDOP: %d (hdop*10)\n", e.hdop);
+    Serial.printf("   Battery Voltage: %.3f V (raw bytes: ", e.battery_voltage);
+    uint8_t* batt_bytes = (uint8_t*)&e.battery_voltage;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", batt_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   GPS Satellites (Health): %d\n", e.gps_satellites);
+    
+    // HEX DUMP OF ENTIRE PAYLOAD
+    Serial.printf("*** COMPLETE PAYLOAD HEX DUMP ***\n");
+    uint8_t* payload_bytes = (uint8_t*)&e;
+    Serial.printf("   Offset  Hex                              ASCII\n");
+    for(int i = 0; i < sizeof(e); i += 16) {
+      Serial.printf("   %04X:   ", i);
+      // Hex bytes
+      for(int j = 0; j < 16 && (i + j) < sizeof(e); j++) {
+        Serial.printf("%02X ", payload_bytes[i + j]);
+      }
+      // Padding for alignment
+      for(int j = (sizeof(e) - i < 16) ? sizeof(e) - i : 16; j < 16; j++) {
+        Serial.printf("   ");
+      }
+      Serial.printf("  ");
+      // ASCII representation
+      for(int j = 0; j < 16 && (i + j) < sizeof(e); j++) {
+        char c = payload_bytes[i + j];
+        Serial.printf("%c", (c >= 32 && c <= 126) ? c : '.');
+      }
+      Serial.printf("\n");
+    }
+    Serial.printf("*** END HEX DUMP ***\n");
+    
     LMIC_setTxData2(1, (xref2u1_t)&e, sizeof(e), 0);
+    Serial.printf("   LMIC_setTxData2() called with port=1, size=%d\n", sizeof(e));
     Serial.printf("Sending network: %s (%s) Lat: %.6f Lon: %.6f\n", 
                   e.ssid, e.mac, e.latitude, e.longitude);
   } else if (!lorawanJoined) {
@@ -405,6 +483,7 @@ void setup() {
   if (axp192_found && axp.begin(Wire, AXP192_ADDRESS)) {
     axp.setPowerOutPut(AXP202_LDO3,  AXP202_ON);
     axp.setPowerOutPut(AXP202_DCDC3, AXP202_ON);
+    axp.adc1Enable(AXP202_BATT_VOL_ADC1, true);
     axp.setLDO3Voltage(3300);
     axp.setDCDC1Voltage(3300);
     Serial.println("AXP192 configured");

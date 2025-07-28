@@ -24,6 +24,7 @@ class WigleData(db.Model):
     altitude = db.Column(db.Float, nullable=True)
     accuracy = db.Column(db.Float, nullable=True)
     uploaded_to_wigle = db.Column(db.Boolean, default=False, nullable=False)
+    device_source = db.Column(db.String(50), nullable=True)  # Name of device that reported this network
 
 class Heartbeat(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -267,6 +268,10 @@ DEVICE_DETAIL_TEMPLATE = '''
             <h3>💾 Memory Usage History</h3>
             <canvas id="memoryChart" width="400" height="200"></canvas>
         </div>
+        <div class="chart-container">
+            <h3>🛰️ GPS Satellites History</h3>
+            <canvas id="gpsChart" width="400" height="200"></canvas>
+        </div>
     </div>
 
     <h2>📋 Heartbeat History</h2>
@@ -296,7 +301,7 @@ DEVICE_DETAIL_TEMPLATE = '''
                         <span class="health-indicator health-critical"></span>Critical
                     {% endif %}
                 </td>
-                <td>{{ hb.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td><span class="utc-timestamp" data-utc="{{ hb.timestamp.isoformat() }}">{{ hb.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span></td>
                 <td>{{ "%.2f"|format(hb.battery or 0) }}V</td>
                 <td>{{ "%.2f"|format(hb.solar_voltage or 0) }}V</td>
                 <td>{{ hb.signal_quality or 'N/A' }}</td>
@@ -315,13 +320,27 @@ DEVICE_DETAIL_TEMPLATE = '''
     </table>
 
     <script>
+        // Timezone conversion utilities
+        function formatLocalDateTime(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleString();
+        }
+        
+        function formatLocalDateTimeShort(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        }
+
         // Prepare data for charts
         const heartbeats = {{ heartbeats | tojson }};
-        const timestamps = heartbeats.map(h => new Date(h.timestamp).toLocaleTimeString()).reverse();
+        const timestamps = heartbeats.map(h => new Date(h.timestamp).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})).reverse();
         const batteryData = heartbeats.map(h => h.battery || 0).reverse();
         const signalData = heartbeats.map(h => h.signal_quality || 0).reverse();
         const solarData = heartbeats.map(h => h.solar_voltage || 0).reverse();
         const memoryData = heartbeats.map(h => (h.free_heap || 0) / 1024).reverse();
+        const gpsData = heartbeats.map(h => h.gps_satellites || 0).reverse();
 
         // Battery Chart
         new Chart(document.getElementById('batteryChart'), {
@@ -418,6 +437,32 @@ DEVICE_DETAIL_TEMPLATE = '''
             }
         });
 
+        // GPS Satellites Chart
+        new Chart(document.getElementById('gpsChart'), {
+            type: 'line',
+            data: {
+                labels: timestamps,
+                datasets: [{
+                    label: 'GPS Satellites',
+                    data: gpsData,
+                    borderColor: '#e67e22',
+                    backgroundColor: 'rgba(230, 126, 34, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            stepSize: 1
+                        }
+                    }
+                }
+            }
+        });
+
         // Name editing functions
         function showNameEdit() {
             document.getElementById('nameEdit').style.display = 'inline-block';
@@ -448,6 +493,19 @@ DEVICE_DETAIL_TEMPLATE = '''
                 alert('Error saving name: ' + error);
             });
         }
+        
+        // Function to convert all UTC timestamps to local time
+        function convertTimestampsToLocal() {
+            document.querySelectorAll('.utc-timestamp').forEach(function(element) {
+                const utcTime = element.getAttribute('data-utc');
+                if (utcTime) {
+                    element.textContent = formatLocalDateTimeShort(utcTime);
+                }
+            });
+        }
+        
+        // Convert timestamps after page load
+        convertTimestampsToLocal();
     </script>
 </body>
 </html>
@@ -750,6 +808,7 @@ MAIN_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -908,6 +967,52 @@ MAIN_TEMPLATE = '''
         </div>
     </div>
 
+    <h2 class="section-title">📈 Network Discovery Trends</h2>
+    <div style="background: white; padding: 20px; border-radius: 10px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; align-items: end; margin-bottom: 15px;">
+            <div>
+                <label style="display: block; margin-bottom: 5px; font-weight: bold;">View:</label>
+                <select id="viewType" onchange="updateNetworksChart()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="cumulative">Cumulative Total</option>
+                    <option value="period" selected>Networks Per Period</option>
+                </select>
+            </div>
+            
+            <div>
+                <label style="display: block; margin-bottom: 5px; font-weight: bold;">Time Scale:</label>
+                <select id="timeScale" onchange="updateNetworksChart()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="5" selected>5 Minutes</option>
+                    <option value="10">10 Minutes</option>
+                    <option value="30">30 Minutes</option>
+                    <option value="60">1 Hour</option>
+                </select>
+            </div>
+            
+            <div>
+                <label style="display: block; margin-bottom: 5px; font-weight: bold;">Start Time:</label>
+                <input type="datetime-local" id="startTime" onchange="updateNetworksChart()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+            
+            <div>
+                <label style="display: block; margin-bottom: 5px; font-weight: bold;">End Time:</label>
+                <input type="datetime-local" id="endTime" onchange="updateNetworksChart()" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+        </div>
+        
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+            <button onclick="updateNetworksChart()" class="btn" style="font-size: 14px; padding: 8px 16px;">🔄 Refresh</button>
+            <button onclick="setTimeRange('all')" class="btn" style="font-size: 14px; padding: 8px 16px; background: #95a5a6;">📊 All Data</button>
+            <button onclick="setTimeRange('24h')" class="btn" style="font-size: 14px; padding: 8px 16px; background: #34495e;">📅 Last 24h</button>
+            <button onclick="setTimeRange('6h')" class="btn" style="font-size: 14px; padding: 8px 16px; background: #2c3e50;">🕕 Last 6h</button>
+            <button onclick="setTimeRange('1h')" class="btn" style="font-size: 14px; padding: 8px 16px; background: #16a085;">🕐 Last Hour</button>
+        </div>
+        
+        <div style="height: 400px;">
+            <canvas id="networksChart"></canvas>
+        </div>
+    </div>
+
+    {% if session.get('logged_in') %}
     <h2 class="section-title">🗺️ Network Map</h2>
     <div id="map"></div>
 
@@ -947,7 +1052,7 @@ MAIN_TEMPLATE = '''
                     </a>
                 </td>
                 <td><code><a href="/device/{{ hb.mac }}" style="text-decoration: none; color: #667eea;">{{ hb.mac }}</a></code></td>
-                <td>{{ hb.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td><span class="utc-timestamp" data-utc="{{ hb.timestamp.isoformat() }}">{{ hb.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</span></td>
                 <td>{{ "%.2f"|format(hb.battery or 0) }}V</td>
                 <td>{{ "%.2f"|format(hb.solar_voltage or 0) }}V</td>
                 <td>{{ hb.signal_quality or 'N/A' }}</td>
@@ -967,100 +1072,385 @@ MAIN_TEMPLATE = '''
     </table>
 
     <h2 class="section-title">📋 Recent Networks</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>SSID</th>
-                <th>MAC Address</th>
-                <th>Security</th>
-                <th>Channel</th>
-                <th>Signal</th>
-                <th>Location</th>
-                <th>First Seen</th>
-                <th>WiGLE Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for net in recent_networks %}
-            <tr>
-                <td><strong>{{ net.ssid or '(Hidden)' }}</strong></td>
-                <td><code>{{ net.mac }}</code></td>
-                <td>{{ net.auth_mode }}</td>
-                <td>{{ net.channel }}</td>
-                <td>{{ net.rssi }} dBm</td>
-                <td>
-                    {% if net.latitude and net.longitude %}
-                        {{ "%.4f"|format(net.latitude) }}, {{ "%.4f"|format(net.longitude) }}
-                        {% if net.accuracy %}
-                            <br><small>±{{ "%.0f"|format(net.accuracy) }}m</small>
-                        {% endif %}
-                    {% else %}
-                        <span style="color: #999;">No GPS</span>
+<table>
+    <thead>
+        <tr>
+            <th>SSID</th>
+            <th>MAC Address</th>
+            <th>Security</th>
+            <th>Channel</th>
+            <th>Signal</th>
+            <th>Location</th>
+            <th>First Seen</th>
+            <th>Device Source</th>
+            <th>WiGLE Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for net in recent_networks %}
+        <tr>
+            <td><strong>{{ net.ssid or '(Hidden)' }}</strong></td>
+            <td><code>{{ net.mac }}</code></td>
+            <td>{{ net.auth_mode }}</td>
+            <td>{{ net.channel }}</td>
+            <td>{{ net.rssi }} dBm</td>
+            <td>
+                {% if net.latitude and net.longitude %}
+                    {{ "%.4f"|format(net.latitude) }}, {{ "%.4f"|format(net.longitude) }}
+                    {% if net.accuracy %}
+                        <br><small>±{{ "%.0f"|format(net.accuracy) }}m</small>
                     {% endif %}
-                </td>
-                <td>{{ net.first_seen.strftime('%m/%d %H:%M') }}</td>
-                <td>
-                    {% if net.uploaded_to_wigle %}
-                        <span style="color: #27ae60;">✅ Uploaded</span>
-                    {% else %}
-                        <span style="color: #e74c3c;">❌ Pending</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="8" style="text-align: center; color: #666;">No networks discovered yet</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                {% else %}
+                    <span style="color: #999;">No GPS</span>
+                {% endif %}
+            </td>
+            <td><span class="utc-timestamp" data-utc="{{ net.first_seen.isoformat() }}">{{ net.first_seen.strftime('%m/%d %H:%M') }}</span></td>
+            <td>
+                {% if net.device_source %}
+                    <a href="/device/{{ device_source_to_mac.get(net.device_source, net.device_source) }}" style="color: #667eea;">
+                        {{ device_name_map.get(device_source_to_mac.get(net.device_source, net.device_source), net.device_source) }}
+                    </a>
+                {% else %}
+                    <span style="color: #999;">Unknown</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if net.uploaded_to_wigle %}
+                    <span style="color: #27ae60;">✅ Uploaded</span>
+                {% else %}
+                    <span style="color: #e74c3c;">❌ Pending</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if session.get('logged_in') %}
+                    <button onclick="deleteNetwork('{{ net.id }}')" class="btn btn-danger" style="font-size: 12px; padding: 6px 10px;">🗑️ Delete</button>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" style="text-align: center; color: #666;">No networks discovered yet</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+    <!-- Pagination Controls -->
+    <div class="pagination-container" style="text-align: center; margin: 20px 0;">
+        {% if has_prev %}
+            <a href="?page={{ prev_num }}" class="btn" onclick="return navigateAndUpdateMap({{ prev_num }})">&laquo; Previous</a>
+        {% endif %}
+        
+        {% if total_pages > 1 %}
+            <span style="margin: 0 20px;">Page {{ current_page }} of {{ total_pages }}</span>
+        {% endif %}
+        
+        {% if has_next %}
+            <a href="?page={{ next_num }}" class="btn" onclick="return navigateAndUpdateMap({{ next_num }})">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
 
     <script>
+        // Timezone conversion utilities
+        function formatLocalDateTime(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleString();
+        }
+        
+        function formatLocalDate(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleDateString();
+        }
+        
+        function formatLocalTime(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleTimeString();
+        }
+        
+        function formatLocalDateTimeShort(utcDateString) {
+            if (!utcDateString) return 'N/A';
+            const date = new Date(utcDateString + (utcDateString.includes('Z') ? '' : 'Z'));
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        }
+
+        // Networks chart variable
+        var networksChart = null;
+
         // Initialize map
         var map = L.map('map').setView([44.9778, -93.2650], 10); // Minneapolis area
+        var markersLayer = L.layerGroup().addTo(map);
+        var infoControl = null;
         
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
-        // Load and display network locations
-        fetch('/api/network_locations')
-            .then(response => response.json())
-            .then(networks => {
-                if (networks.length > 0) {
-                    var bounds = [];
+        // Function to load and display network locations
+        function loadNetworkLocations(page) {
+            // Clear existing markers and info
+            markersLayer.clearLayers();
+            if (infoControl) {
+                map.removeControl(infoControl);
+                infoControl = null;
+            }
+            
+            fetch(`/api/network_locations?page=${page}`)
+                .then(response => response.json())
+                .then(networks => {
+                    if (networks.length > 0) {
+                        var bounds = [];
+                        
+                        networks.forEach(function(network) {
+                            if (network.latitude && network.longitude) {
+                                var marker = L.marker([network.latitude, network.longitude])
+                                    .bindPopup(`
+                                        <strong>${network.ssid || '(Hidden)'}</strong><br>
+                                        MAC: ${network.mac}<br>
+                                        Security: ${network.auth_mode}<br>
+                                        Signal: ${network.rssi} dBm<br>
+                                        Channel: ${network.channel}
+                                    `);
+                                
+                                markersLayer.addLayer(marker);
+                                bounds.push([network.latitude, network.longitude]);
+                            }
+                        });
+                        
+                        if (bounds.length > 0) {
+                            map.fitBounds(bounds, {padding: [20, 20]});
+                        }
+                    } else {
+                        // No GPS data for this page, show message
+                        infoControl = L.control();
+                        infoControl.onAdd = function (map) {
+                            this._div = L.DomUtil.create('div', 'info');
+                            this._div.innerHTML = '<h4>No GPS Data</h4>No networks with GPS coordinates on this page';
+                            return this._div;
+                        };
+                        infoControl.addTo(map);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading network data:', error);
+                });
+        }
+        
+        // Function to handle navigation and map updates
+        function navigateAndUpdateMap(page) {
+            // Update URL without refreshing page
+            const url = new URL(window.location);
+            url.searchParams.set('page', page);
+            window.history.pushState({}, '', url);
+            
+            // Load new data for the page
+            loadNetworkLocations(page);
+            
+            // Prevent default link behavior and reload page normally
+            return true;
+        }
+
+        // Get current page from URL parameters and load initial data (only for authenticated users)
+        {% if session.get('logged_in') %}
+        const urlParams = new URLSearchParams(window.location.search);
+        const currentPage = urlParams.get('page') || 1;
+        loadNetworkLocations(currentPage);
+        {% endif %}
+
+        // Function to set time range presets
+        function setTimeRange(preset) {
+            const now = new Date();
+            const startTimeInput = document.getElementById('startTime');
+            const endTimeInput = document.getElementById('endTime');
+            
+            // Format datetime for input (YYYY-MM-DDTHH:MM)
+            function formatForInput(date) {
+                return date.toISOString().slice(0, 16);
+            }
+            
+            switch(preset) {
+                case '1h':
+                    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+                    startTimeInput.value = formatForInput(oneHourAgo);
+                    endTimeInput.value = formatForInput(now);
+                    break;
+                case '6h':
+                    const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+                    startTimeInput.value = formatForInput(sixHoursAgo);
+                    endTimeInput.value = formatForInput(now);
+                    break;
+                case '24h':
+                    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                    startTimeInput.value = formatForInput(oneDayAgo);
+                    endTimeInput.value = formatForInput(now);
+                    break;
+                case 'all':
+                default:
+                    startTimeInput.value = '';
+                    endTimeInput.value = '';
+                    break;
+            }
+            
+            updateNetworksChart();
+        }
+
+        // Function to update networks chart
+        function updateNetworksChart() {
+            const viewType = document.getElementById('viewType').value;
+            const timeScale = document.getElementById('timeScale').value;
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+            
+            console.log('Updating chart with:', viewType, timeScale, startTime, endTime);
+            
+            // Build query parameters
+            let queryParams = `view_type=${viewType}&time_scale=${timeScale}`;
+            if (startTime) {
+                queryParams += `&start_time=${encodeURIComponent(startTime)}`;
+            }
+            if (endTime) {
+                queryParams += `&end_time=${encodeURIComponent(endTime)}`;
+            }
+            
+            fetch(`/api/network_stats?${queryParams}`)
+                .then(response => {
+                    console.log('Response status:', response.status);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Received data:', data);
                     
-                    networks.forEach(function(network) {
-                        if (network.latitude && network.longitude) {
-                            var marker = L.marker([network.latitude, network.longitude])
-                                .bindPopup(`
-                                    <strong>${network.ssid || '(Hidden)'}</strong><br>
-                                    MAC: ${network.mac}<br>
-                                    Security: ${network.auth_mode}<br>
-                                    Signal: ${network.rssi} dBm<br>
-                                    Channel: ${network.channel}
-                                `);
-                            
-                            marker.addTo(map);
-                            bounds.push([network.latitude, network.longitude]);
+                    if (!data || data.length === 0) {
+                        console.log('No data available for chart');
+                        // Show message in chart area
+                        const ctx = document.getElementById('networksChart').getContext('2d');
+                        if (networksChart) {
+                            networksChart.destroy();
+                        }
+                        // You could draw a "No data" message here
+                        return;
+                    }
+                    
+                    if (networksChart) {
+                        networksChart.destroy();
+                    }
+                    
+                    const ctx = document.getElementById('networksChart').getContext('2d');
+                    const labels = data.map(d => {
+                        // Convert the timestamp to local time for display
+                        const date = new Date(d.timestamp);
+                        return date.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                    });
+                    const counts = data.map(d => d.count);
+                    
+                    console.log('Chart labels:', labels);
+                    console.log('Chart data:', counts);
+                    
+                    const chartTitle = viewType === 'cumulative' 
+                        ? 'Cumulative Unique Networks with GPS' 
+                        : `Unique Networks Discovered Every ${timeScale} Minutes`;
+                    
+                    const chartColor = viewType === 'cumulative' ? '#27ae60' : '#3498db';
+                    const bgColor = viewType === 'cumulative' ? 'rgba(39, 174, 96, 0.1)' : 'rgba(52, 152, 219, 0.1)';
+                    
+                    networksChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: chartTitle,
+                                data: counts,
+                                borderColor: chartColor,
+                                backgroundColor: bgColor,
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        stepSize: 1
+                                    }
+                                },
+                                x: {
+                                    ticks: {
+                                        maxTicksLimit: 20
+                                    }
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    position: 'top'
+                                }
+                            }
                         }
                     });
                     
-                    if (bounds.length > 0) {
-                        map.fitBounds(bounds, {padding: [20, 20]});
+                    console.log('Chart created successfully');
+                })
+                .catch(error => {
+                    console.error('Error loading network stats:', error);
+                    // Show error in chart area
+                    const ctx = document.getElementById('networksChart').getContext('2d');
+                    if (networksChart) {
+                        networksChart.destroy();
                     }
-                } else {
-                    // No GPS data yet, show message
-                    var info = L.control();
-                    info.onAdd = function (map) {
-                        this._div = L.DomUtil.create('div', 'info');
-                        this._div.innerHTML = '<h4>No GPS Data</h4>Networks will appear here once GPS coordinates are available';
-                        return this._div;
-                    };
-                    info.addTo(map);
+                });
+        }
+
+        // Initialize time inputs with defaults (last hour for period view)
+        function initializeTimeInputs() {
+            const now = new Date();
+            const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+            
+            function formatForInput(date) {
+                return date.toISOString().slice(0, 16);
+            }
+            
+            // Set default to last hour for the default period view
+            const startTimeInput = document.getElementById('startTime');
+            const endTimeInput = document.getElementById('endTime');
+            
+            console.log('🔧 DEBUG: startTimeInput exists?', !!startTimeInput);
+            console.log('🔧 DEBUG: endTimeInput exists?', !!endTimeInput);
+            console.log('🔧 DEBUG: Current values:', startTimeInput?.value, endTimeInput?.value);
+            
+            if (!startTimeInput.value && !endTimeInput.value) {
+                startTimeInput.value = formatForInput(oneHourAgo);
+                endTimeInput.value = formatForInput(now);
+                console.log('🔧 DEBUG: Set default times:', formatForInput(oneHourAgo), 'to', formatForInput(now));
+            }
+        }
+
+        // Function to convert all UTC timestamps to local time
+        function convertTimestampsToLocal() {
+            document.querySelectorAll('.utc-timestamp').forEach(function(element) {
+                const utcTime = element.getAttribute('data-utc');
+                if (utcTime) {
+                    element.textContent = formatLocalDateTimeShort(utcTime);
                 }
-            })
-            .catch(error => {
-                console.error('Error loading network data:', error);
             });
+        }
+
+        // Initialize time inputs and load chart (for all users)
+        console.log('🔧 DEBUG: Initializing chart for all users');
+        console.log('🔧 DEBUG: User logged in?', {{ 'true' if session.get('logged_in') else 'false' }});
+        initializeTimeInputs();
+        console.log('🔧 DEBUG: Time inputs initialized, calling updateNetworksChart()');
+        updateNetworksChart();
+        
+        // Convert timestamps after page load
+        convertTimestampsToLocal();
 
         // Clear database function
         function clearDatabase() {
@@ -1106,10 +1496,33 @@ MAIN_TEMPLATE = '''
             }
         }
         
-        // Auto-refresh every 30 seconds
-        setInterval(function() {
-            location.reload();
-        }, 30000);
+        // Delete network function
+        function deleteNetwork(networkId) {
+            if (confirm('Are you sure you want to delete this network?')) {
+                fetch('/api/network/' + networkId, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        location.reload();
+                    } else {
+                        alert('Error deleting network: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error deleting network: ' + error);
+                });
+            }
+        }
+
+        // Auto-refresh disabled - was causing browser crashes
+        // setInterval(function() {
+        //     location.reload();
+        // }, 30000);
     </script>
 </body>
 </html>
@@ -1250,15 +1663,40 @@ def get_or_create_device(mac):
 
 @app.route('/')
 def dashboard():
-    recent_networks = WigleData.query.order_by(WigleData.first_seen.desc()).limit(100).all()
-    
+    page = request.args.get('page', 1, type=int)
+    per_page = 100
+
+    try:
+        # Paginated networks
+        networks_paginated = WigleData.query.order_by(WigleData.first_seen.desc()).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        recent_networks = networks_paginated.items
+
+        # Pagination info
+        has_prev = networks_paginated.has_prev
+        has_next = networks_paginated.has_next
+        prev_num = networks_paginated.prev_num if has_prev else None
+        next_num = networks_paginated.next_num if has_next else None
+        total_pages = networks_paginated.pages
+        current_page = page
+    except Exception as e:
+        # Fallback if database doesn't exist yet
+        recent_networks = []
+        has_prev = False
+        has_next = False
+        prev_num = None
+        next_num = None
+        total_pages = 1
+        current_page = 1
+
     # Get latest heartbeat per device
     latest_heartbeats = db.session.query(Heartbeat).filter(
         Heartbeat.id.in_(
             db.session.query(db.func.max(Heartbeat.id)).group_by(Heartbeat.mac)
         )
     ).all()
-    
+
     # Get device info for each heartbeat
     device_data = []
     for hb in latest_heartbeats:
@@ -1267,21 +1705,45 @@ def dashboard():
             'heartbeat': hb,
             'device': device
         })
+
+    # Map device_source MACs to their device names
+    device_macs = [net.device_source for net in recent_networks if net.device_source]
+    device_name_map = {
+        dev.mac: dev.name if dev.name else dev.mac
+        for dev in Device.query.filter(Device.mac.in_(device_macs)).all()
+    }
     
+    # Create reverse mapping: device_source (name or MAC) -> actual MAC address for URLs
+    device_source_to_mac = {}
+    for dev in Device.query.filter(Device.mac.in_(device_macs)).all():
+        device_source_to_mac[dev.mac] = dev.mac  # MAC -> MAC
+        if dev.name:
+            device_source_to_mac[dev.name] = dev.mac  # Name -> MAC
+
     total_networks = WigleData.query.count()
     unique_networks = db.session.query(WigleData.mac).distinct().count()
     networks_with_gps = WigleData.query.filter(WigleData.latitude.isnot(None)).count()
     uploaded_networks = WigleData.query.filter_by(uploaded_to_wigle=True).count()
     active_devices = len(latest_heartbeats)
-    
+
     return render_template_string(MAIN_TEMPLATE, 
-                                  recent_networks=recent_networks,
-                                  device_data=device_data,
-                                  total_networks=total_networks,
-                                  unique_networks=unique_networks,
-                                  networks_with_gps=networks_with_gps,
-                                  uploaded_networks=uploaded_networks,
-                                  active_devices=active_devices)
+        recent_networks=recent_networks,
+        device_data=device_data,
+        total_networks=total_networks,
+        unique_networks=unique_networks,
+        networks_with_gps=networks_with_gps,
+        uploaded_networks=uploaded_networks,
+        active_devices=active_devices,
+        has_prev=has_prev,
+        has_next=has_next,
+        prev_num=prev_num,
+        next_num=next_num,
+        total_pages=total_pages,
+        current_page=current_page,
+        device_name_map=device_name_map,
+        device_source_to_mac=device_source_to_mac
+    )
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1304,11 +1766,22 @@ def logout():
     return redirect(url_for('dashboard'))
 
 @app.route('/api/network_locations')
+@login_required
 def network_locations():
-    networks = db.session.query(WigleData).filter(
+    page = request.args.get('page', 1, type=int)
+    per_page = 100
+    
+    # Get the same paginated networks as the table, but filter for GPS data
+    networks_paginated = WigleData.query.filter(
         WigleData.latitude.isnot(None),
-        WigleData.longitude.isnot(None)
-    ).all()
+        WigleData.longitude.isnot(None),
+        WigleData.latitude.between(-90, 90),  # Valid latitude range
+        WigleData.longitude.between(-180, 180)  # Valid longitude range
+    ).order_by(WigleData.first_seen.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    networks = networks_paginated.items
     
     return jsonify([{
         'ssid': net.ssid,
@@ -1319,6 +1792,130 @@ def network_locations():
         'latitude': net.latitude,
         'longitude': net.longitude
     } for net in networks])
+
+@app.route('/api/network_stats')
+def network_stats():
+    """
+    Provides network discovery statistics over time
+    Query params:
+    - view_type: 'cumulative' or 'period'  
+    - time_scale: minutes (5, 10, 30, 60)
+    - start_time: ISO format datetime (optional)
+    - end_time: ISO format datetime (optional)
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+    
+    try:
+        view_type = request.args.get('view_type', 'cumulative')
+        time_scale = int(request.args.get('time_scale', 30))  # minutes
+        start_time_str = request.args.get('start_time')
+        end_time_str = request.args.get('end_time')
+        
+        print(f"📊 Network stats request: view_type={view_type}, time_scale={time_scale}, start_time={start_time_str}, end_time={end_time_str}")
+        
+        # Build query with time filtering
+        query = db.session.query(WigleData).filter(
+            WigleData.latitude.isnot(None),
+            WigleData.longitude.isnot(None)
+        )
+        
+        # Parse and apply time filters if provided
+        filter_start_time = None
+        filter_end_time = None
+        
+        if start_time_str:
+            try:
+                filter_start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                query = query.filter(WigleData.first_seen >= filter_start_time)
+                print(f"📊 Filtering from: {filter_start_time}")
+            except ValueError as e:
+                print(f"⚠️ Invalid start_time format: {e}")
+        
+        if end_time_str:
+            try:
+                filter_end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+                query = query.filter(WigleData.first_seen <= filter_end_time)
+                print(f"📊 Filtering to: {filter_end_time}")
+            except ValueError as e:
+                print(f"⚠️ Invalid end_time format: {e}")
+        
+        networks = query.order_by(WigleData.first_seen.asc()).all()
+        
+        print(f"📊 Found {len(networks)} networks with GPS data (after time filtering)")
+        
+        if not networks:
+            print("📊 No networks found, returning empty array")
+            return jsonify([])
+        
+        # Determine the actual time range for bucketing
+        if filter_start_time and filter_end_time:
+            # Use the specified range
+            start_time = filter_start_time
+            end_time = filter_end_time
+        elif filter_start_time:
+            # Use specified start and data end
+            start_time = filter_start_time
+            end_time = networks[-1].first_seen
+        elif filter_end_time:
+            # Use data start and specified end
+            start_time = networks[0].first_seen
+            end_time = filter_end_time
+        else:
+            # Use full data range
+            start_time = networks[0].first_seen
+            end_time = networks[-1].first_seen
+        
+        print(f"📊 Time range: {start_time} to {end_time}")
+        
+        # Generate time buckets
+        time_buckets = []
+        current_time = start_time
+        while current_time <= end_time:
+            time_buckets.append(current_time)
+            current_time += timedelta(minutes=time_scale)
+        
+        # If we don't have the final bucket, add it
+        if time_buckets[-1] < end_time:
+            time_buckets.append(end_time + timedelta(minutes=time_scale))
+        
+        print(f"📊 Created {len(time_buckets)} time buckets")
+        
+        results = []
+        unique_networks_seen = set()
+        
+        for i, bucket_start in enumerate(time_buckets[:-1]):
+            bucket_end = time_buckets[i + 1]
+            
+            # Find networks first seen in this time bucket
+            bucket_networks = [n for n in networks 
+                              if bucket_start <= n.first_seen < bucket_end]
+            
+            # Count unique networks in this bucket (by MAC address)
+            unique_in_bucket = set(n.mac for n in bucket_networks)
+            period_count = len(unique_in_bucket)
+            
+            # Add to cumulative set
+            unique_networks_seen.update(unique_in_bucket)
+            cumulative_count = len(unique_networks_seen)
+            
+            # Choose value based on view type
+            count = cumulative_count if view_type == 'cumulative' else period_count
+            
+            results.append({
+                'timestamp': bucket_start.isoformat(),
+                'count': count,
+                'label': bucket_start.strftime('%m/%d %H:%M')  # Keep this for fallback, but we'll use timestamp in JS
+            })
+        
+        print(f"📊 Returning {len(results)} data points")
+        return jsonify(results)
+        
+    except Exception as e:
+        print(f"❌ Error in network_stats: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/clear_database', methods=['POST'])
 @login_required
@@ -1350,7 +1947,8 @@ def receive_data():
         latitude=data.get('latitude'),
         longitude=data.get('longitude'),
         altitude=data.get('altitude'),
-        accuracy=data.get('accuracy')
+        accuracy=data.get('accuracy'),
+        device_source="Legacy API"  # Single network API (likely old data)
     )
     db.session.add(entry)
     db.session.commit()
@@ -1363,6 +1961,26 @@ def receive_batch():
     
     print(f"📦 Received batch: {len(networks)} networks")
     
+    # Try to determine device source (from cellular device)
+    device_mac = data.get('device_mac')  # If provided in batch
+    if device_mac:
+        device = get_or_create_device(device_mac)
+        device_source_name = device.name if device.name else device_mac
+    else:
+        # Fallback: try to find device from recent heartbeats based on timing
+        recent_heartbeat = Heartbeat.query.order_by(Heartbeat.timestamp.desc()).first()
+        if recent_heartbeat:
+            if recent_heartbeat.timestamp.tzinfo is None:
+                recent_heartbeat.timestamp = recent_heartbeat.timestamp.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - recent_heartbeat.timestamp).total_seconds() < 300:  # Within 5 minutes
+                device = Device.query.filter_by(mac=recent_heartbeat.mac).first()
+                device_source_name = device.name if (device and device.name) else recent_heartbeat.mac
+            else:
+                device_source_name = "Cellular Device"  # Fallback
+        else:
+            device_source_name = "Cellular Device"
+    
+    # ✅ This block must be *inside* the function too
     entries = []
     for net in networks:
         entry = WigleData(
@@ -1375,14 +1993,17 @@ def receive_batch():
             latitude=net.get('latitude'),
             longitude=net.get('longitude'),
             altitude=net.get('altitude'),
-            accuracy=net.get('accuracy')
+            accuracy=net.get('accuracy'),
+            device_source=device_source_name
         )
         entries.append(entry)
-        print(f"  📍 {net.get('ssid', 'Hidden')} ({net.get('mac', 'Unknown')})")
-    
+        print(f"  📍 {net.get('ssid', 'Hidden')} ({net.get('mac', 'Unknown')}) from {device_source_name}")
+
     db.session.add_all(entries)
     db.session.commit()
     return jsonify({"status": "success", "count": len(entries)}), 201
+
+
 
 @app.route('/api/heartbeat', methods=['POST'])
 def receive_heartbeat():
@@ -1415,22 +2036,101 @@ def receive_helium_payload():
     Converts Helium payload format to internal WigleData format
     """
     try:
-        data = request.json
-        print(f"📡 Received Helium webhook: {data}")
+        print("=" * 80)
+        print("*** HELIUM WEBHOOK RECEIVED ***")
+        print(f"Request method: {request.method}")
+        print(f"Request headers: {dict(request.headers)}")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Content-Length: {request.content_length}")
+        print("Raw request data:")
+        raw_data = request.get_data()
+        print(f"Raw bytes: {raw_data}")
+        print(f"Raw string: {raw_data.decode('utf-8', errors='replace')}")
+        
+        # Try to parse JSON
+        try:
+            data = request.json
+            print(f"Parsed JSON successfully: {data}")
+        except Exception as json_error:
+            print(f"❌ JSON parsing failed: {json_error}")
+            print("❌ Request is not valid JSON!")
+            return jsonify({"status": "error", "message": f"Invalid JSON: {str(json_error)}"}), 400
+        
+        if data is None:
+            print("❌ request.json returned None")
+            return jsonify({"status": "error", "message": "No JSON data received"}), 400
+        
+        print("*** ANALYZING WEBHOOK STRUCTURE ***")
+        print(f"Top-level keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        
+        # Show complete webhook structure for debugging signal data location
+        import json
+        print("*** COMPLETE WEBHOOK STRUCTURE ***")
+        print(json.dumps(data, indent=2, default=str))
         
         # Extract device information
         dev_eui = data.get('dev_eui', 'Unknown')
         device_name = data.get('name', 'LoRaWAN Device')
+        print(f"Device EUI: {dev_eui}")
+        print(f"Device Name: {device_name}")
         
-        # Extract decoded payload
-        decoded = data.get('decoded', {})
-        payload = decoded.get('payload', {})
+        # Look for payload data in multiple possible locations
+        payload = None
+        print("*** SEARCHING FOR PAYLOAD DATA ***")
+        
+        # Check for flat structure (direct keys at top level)
+        if 'ssid' in data and 'mac' in data:
+            print("Found flat structure - creating payload from top-level keys")
+            payload = {
+                'ssid': data.get('ssid'),
+                'mac': data.get('mac'),
+                'rssi': data.get('rssi'),
+                'channel': data.get('channel'),
+                'encryption': data.get('encryption'),
+                'latitude': data.get('latitude'),
+                'longitude': data.get('longitude'),
+                'altitude': data.get('altitude'),
+                'sats': data.get('sats'),
+                'hdop': data.get('hdop')
+            }
+            print(f"Created flat payload: {payload}")
+        
+        # Check for decoded payload (Helium Console format)
+        elif 'decoded' in data:
+            decoded = data['decoded']
+            print(f"Found 'decoded' section: {decoded}")
+            if 'payload' in decoded:
+                payload = decoded['payload']
+                print(f"Found payload in decoded.payload: {payload}")
+        
+        # Check for direct payload
+        elif 'payload' in data:
+            payload = data['payload']
+            print(f"Found direct payload: {payload}")
+        
+        # Check for base64 payload that needs decoding
+        elif 'payload_raw' in data:
+            import base64
+            raw_payload = data['payload_raw']
+            print(f"Found raw payload (base64): {raw_payload}")
+            try:
+                decoded_bytes = base64.b64decode(raw_payload)
+                print(f"Decoded bytes ({len(decoded_bytes)}): {decoded_bytes.hex()}")
+                # This would need custom parsing based on our T-Beam struct
+            except Exception as b64_error:
+                print(f"Base64 decode error: {b64_error}")
         
         if not payload:
-            print("❌ No decoded payload found")
-            return jsonify({"status": "error", "message": "No payload data"}), 400
+            print("❌ No payload found in any expected location")
+            print("Available data structure:")
+            import json
+            print(json.dumps(data, indent=2, default=str))
+            return jsonify({"status": "error", "message": "No payload data found"}), 400
         
-        print(f"📋 Decoded payload: {payload}")
+        print("*** DETAILED PAYLOAD ANALYSIS ***")
+        print(f"Payload type: {type(payload)}")
+        print(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'Not a dict'}")
+        print(f"Full payload: {payload}")
         
         # Map auth_mode from encryption type
         auth_mode_map = {
@@ -1448,20 +2148,60 @@ def receive_helium_payload():
         # Convert Helium payload to WigleData format
         mac = payload.get('mac', 'Unknown')
         ssid = payload.get('ssid', 'Unknown')
-        encryption_type = payload.get('encryption', 0)
+        try:
+            encryption_type = int(payload.get('encryption', 0))
+        except (ValueError, TypeError):
+            encryption_type = 0
         auth_mode = auth_mode_map.get(encryption_type, 'unknown')
+        
+        print("*** EXTRACTED WIFI DATA ***")
+        print(f"MAC: {mac}")
+        print(f"SSID: {ssid}")
+        print(f"Encryption Type: {encryption_type}")
+        print(f"Auth Mode: {auth_mode}")
+        print(f"Channel: {payload.get('channel', 0)}")
+        print(f"RSSI: {payload.get('rssi', 0)}")
         
         # Handle GPS coordinates (Helium uses very small numbers for zero)
         latitude = payload.get('latitude', 0)
         longitude = payload.get('longitude', 0)
         
+        print("*** GPS COORDINATE PROCESSING ***")
+        print(f"Raw latitude: {latitude} (type: {type(latitude)})")
+        print(f"Raw longitude: {longitude} (type: {type(longitude)})")
+        
         # If coordinates are extremely small (< 0.001), treat as null/no GPS
         if abs(latitude) < 0.001:
+            print("Latitude too small, setting to None")
             latitude = None
         if abs(longitude) < 0.001:
+            print("Longitude too small, setting to None")
             longitude = None
             
         altitude = payload.get('altitude', 0) if payload.get('altitude', 0) != 0 else None
+        
+        print(f"Final latitude: {latitude}")
+        print(f"Final longitude: {longitude}")
+        print(f"Altitude: {altitude}")
+        print(f"Satellites: {payload.get('sats', 0)}")
+        print(f"HDOP: {payload.get('hdop', None)}")
+        
+        # Extract device health data
+        battery_voltage = payload.get('battery_voltage', 0.0)
+        gps_satellites = payload.get('gps_satellites', 0)
+        
+        print("*** DEVICE HEALTH DATA ***")
+        print(f"Battery Voltage: {battery_voltage}V")
+        if battery_voltage < 0:
+            print(f"⚠️  WARNING: Negative battery voltage detected! Check AXP192 configuration or float parsing.")
+        print(f"GPS Satellites (Health): {gps_satellites}")
+        
+        # Also create/update device record using DevEUI as MAC
+        print(f"Creating/updating device record for {dev_eui}...")
+        device = get_or_create_device(dev_eui)
+        
+        # Get device name (use custom name if set, otherwise use device name from webhook, otherwise use dev_eui)
+        device_source_name = device.name if device.name else (device_name if device_name != "LoRaWAN Device" else dev_eui)
         
         # Create WigleData entry
         entry = WigleData(
@@ -1474,44 +2214,69 @@ def receive_helium_payload():
             latitude=latitude,
             longitude=longitude,
             altitude=altitude,
-            accuracy=payload.get('hdop', None)  # Using HDOP as accuracy approximation
+            accuracy=payload.get('hdop', None),  # Using HDOP as accuracy approximation
+            device_source=device_source_name  # Add device source name
         )
         
+        print("*** DATABASE OPERATIONS ***")
+        print(f"Adding WigleData entry with device source: {device_source_name}")
         db.session.add(entry)
         
-        # Also create/update device record using DevEUI as MAC
-        device = get_or_create_device(dev_eui)
+        # Extract LoRaWAN signal quality from Helium metadata
+        lorawan_rssi = data.get('rssi', -999)  # LoRaWAN RSSI from Helium
+        lorawan_snr = data.get('snr', -999)    # LoRaWAN SNR from Helium
         
-        # Create heartbeat from LoRaWAN metadata if available
-        hotspots = data.get('hotspots', [])
-        if hotspots:
-            hotspot = hotspots[0]  # Use first hotspot
-            hb = Heartbeat(
-                mac=dev_eui,
-                timestamp=datetime.now(timezone.utc),
-                battery=0,  # LoRaWAN doesn't provide battery info in this payload
-                solar_voltage=None,
-                signal_quality=hotspot.get('snr', 0),  # Use SNR as signal quality
-                free_heap=None,
-                networks_cached=None,
-                gps_active=(latitude is not None and longitude is not None),
-                gps_satellites=payload.get('sats', 0)
-            )
-            db.session.add(hb)
+        # Handle fallback values (when RSSI/SNR not available)
+        if lorawan_rssi == -999:
+            lorawan_rssi = None
+        if lorawan_snr == -999:
+            lorawan_snr = 0  # Use 0 as fallback for signal quality field
         
+        print("*** LORAWAN SIGNAL QUALITY ***")
+        print(f"LoRaWAN RSSI: {lorawan_rssi if lorawan_rssi is not None else 'N/A'} dBm")
+        print(f"LoRaWAN SNR: {lorawan_snr} dB")
+        if lorawan_rssi == -999 or lorawan_snr == 0:
+            print("⚠️  WARNING: Using fallback signal values. Check if Helium provides 'rssi' and 'snr' at top level.")
+            print("    Available top-level keys in webhook:", list(data.keys()))
+        
+        # Create heartbeat with health data piggybacked from network transmission
+        hb = Heartbeat(
+            mac=dev_eui,
+            timestamp=datetime.now(timezone.utc),
+            battery=battery_voltage,  # Now using actual battery voltage from device
+            solar_voltage=None,  # T-Beam doesn't have solar
+            signal_quality=lorawan_snr,  # Use LoRaWAN SNR as signal quality (more reliable than RSSI)
+            free_heap=None,  # Not available in LoRaWAN payload
+            networks_cached=None,  # Not available in LoRaWAN payload
+            gps_active=(latitude is not None and longitude is not None),
+            gps_satellites=gps_satellites  # Using device health GPS satellite count
+        )
+        print(f"Creating heartbeat with battery: {battery_voltage}V, SNR: {lorawan_snr}dB, GPS sats: {gps_satellites}")
+        db.session.add(hb)
+        
+        print("Committing database transaction...")
         db.session.commit()
         
-        print(f"✅ Stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
+        print(f"✅ Successfully stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
+        print("=" * 80)
         
         return jsonify({"status": "success", "message": "Data stored successfully"}), 200
         
     except Exception as e:
-        print(f"❌ Error processing Helium payload: {str(e)}")
-        print(f"📋 Raw request data: {request.get_data()}")
+        print("=" * 80)
+        print(f"❌ CRITICAL ERROR processing Helium payload: {str(e)}")
+        print(f"Exception type: {type(e).__name__}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
+        print(f"Raw request data: {request.get_data()}")
+        print(f"Request headers: {dict(request.headers)}")
+        print("=" * 80)
         db.session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/csv')
+@login_required
 def download_csv():
     import csv
     from io import StringIO
@@ -1558,6 +2323,7 @@ def status():
 # New endpoints for device management, settings, and WiGLE upload
 
 @app.route('/device/<mac>')
+@login_required
 def device_detail(mac):
     device = get_or_create_device(mac)
     
@@ -1709,6 +2475,21 @@ def test_wigle_connection():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/network/<int:network_id>', methods=['DELETE'])
+@login_required
+def delete_network(network_id):
+    try:
+        network = WigleData.query.get_or_404(network_id)
+        db.session.delete(network)
+        db.session.commit()
+        return jsonify({
+            "status": "success", 
+            "message": f"Network {network.mac} deleted successfully"
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/api/upload_to_wigle', methods=['POST'])
 @login_required
 def upload_to_wigle():
@@ -1799,10 +2580,34 @@ def upload_to_wigle():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+def update_existing_data():
+    """Update existing WigleData records without device_source to have a default value"""
+    try:
+        # Count records without device_source
+        null_count = WigleData.query.filter(WigleData.device_source.is_(None)).count()
+        if null_count > 0:
+            print(f"🔄 Updating {null_count} existing records without device source...")
+            
+            # Update all NULL device_source records to "Legacy Data"
+            WigleData.query.filter(WigleData.device_source.is_(None)).update(
+                {WigleData.device_source: "Legacy Data"}, 
+                synchronize_session=False
+            )
+            db.session.commit()
+            print(f"✅ Updated {null_count} records with default device source")
+        else:
+            print("✅ All records already have device source information")
+    except Exception as e:
+        print(f"⚠️ Error updating existing data: {e}")
+        db.session.rollback()
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
         print("📊 Database tables created/verified")
+        
+        # Update existing data after schema changes
+        update_existing_data()
     
     print("🚀 Starting WiFi Wardriving Production Server...")
     print("📍 Production mode - accessible on port 5001")
@@ -1810,4 +2615,4 @@ if __name__ == '__main__':
     print("🔐 Login: lozaning / oneill")
     print("")
     
-    app.run(host='127.0.0.1', port=5001, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False)
