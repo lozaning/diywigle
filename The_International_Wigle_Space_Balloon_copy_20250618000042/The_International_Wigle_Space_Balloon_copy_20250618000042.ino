@@ -138,7 +138,7 @@ void updateDisplay() {
   // Battery voltage
   float batteryVoltage = 0.0;
   if (axp192_found) {
-    batteryVoltage = axp.getBattVoltage() / 1000.0;  // Convert mV to V
+    batteryVoltage = axp.getBattVoltage();
   }
   display.drawString(0, 52, "Batt: " + String(batteryVoltage, 2) + "V");
   
@@ -450,6 +450,7 @@ void setup() {
   if (axp192_found && axp.begin(Wire, AXP192_ADDRESS)) {
     axp.setPowerOutPut(AXP202_LDO3,  AXP202_ON);
     axp.setPowerOutPut(AXP202_DCDC3, AXP202_ON);
+    axp.adc1Enable(AXP202_BATT_VOL_ADC1, true);
     axp.setLDO3Voltage(3300);
     axp.setDCDC1Voltage(3300);
     Serial.println("AXP192 configured");
