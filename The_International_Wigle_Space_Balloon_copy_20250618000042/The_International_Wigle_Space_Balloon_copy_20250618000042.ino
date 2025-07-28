@@ -80,7 +80,7 @@ static uint16_t     seenHead  = 0;
 
 // LMIC job & timing - EXACTLY like original
 static osjob_t sendjob;
-#define TX_INTERVAL_SEC 30
+#define TX_INTERVAL_SEC 10
 
 // LMIC pinmap - EXACTLY like original
 const lmic_pinmap lmic_pins = {
@@ -173,7 +173,7 @@ void checkDisplayUpdate() {
 // Process async scan results - MODIFIED to work without GPS requirement
 void processScanResults(int n) {
   lastScanCount = n;
-  // Get GPS data if available
+  // Get GPS data if available - initialize to zero
   float lat = 0.0, lng = 0.0;
   int16_t alt = 0;
   uint8_t sats = 0;
@@ -249,7 +249,52 @@ void do_send(osjob_t* j) {
     WifiNetwork &e = networks[--networksCount];
     Serial.printf("*** ATTEMPTING TO SEND NETWORK DATA ***\n");
     Serial.printf("   Payload size: %d bytes\n", sizeof(e));
+    
+    // VERBOSE PAYLOAD DEBUGGING
+    Serial.printf("*** DETAILED PAYLOAD STRUCTURE ***\n");
+    Serial.printf("   SSID: '%s' (length: %d)\n", e.ssid, strlen(e.ssid));
+    Serial.printf("   MAC: '%s' (length: %d)\n", e.mac, strlen(e.mac));
+    Serial.printf("   RSSI: %d dBm\n", e.rssi);
+    Serial.printf("   Channel: %d\n", e.channel);
+    Serial.printf("   Encryption: %d\n", e.encryption);
+    Serial.printf("   Latitude: %.8f (raw bytes: ", e.latitude);
+    uint8_t* lat_bytes = (uint8_t*)&e.latitude;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", lat_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   Longitude: %.8f (raw bytes: ", e.longitude);
+    uint8_t* lon_bytes = (uint8_t*)&e.longitude;
+    for(int i = 0; i < 4; i++) Serial.printf("%02X ", lon_bytes[i]);
+    Serial.printf(")\n");
+    Serial.printf("   Altitude: %d meters\n", e.altitude);
+    Serial.printf("   Satellites: %d\n", e.sats);
+    Serial.printf("   HDOP: %d (hdop*10)\n", e.hdop);
+    
+    // HEX DUMP OF ENTIRE PAYLOAD
+    Serial.printf("*** COMPLETE PAYLOAD HEX DUMP ***\n");
+    uint8_t* payload_bytes = (uint8_t*)&e;
+    Serial.printf("   Offset  Hex                              ASCII\n");
+    for(int i = 0; i < sizeof(e); i += 16) {
+      Serial.printf("   %04X:   ", i);
+      // Hex bytes
+      for(int j = 0; j < 16 && (i + j) < sizeof(e); j++) {
+        Serial.printf("%02X ", payload_bytes[i + j]);
+      }
+      // Padding for alignment
+      for(int j = (sizeof(e) - i < 16) ? sizeof(e) - i : 16; j < 16; j++) {
+        Serial.printf("   ");
+      }
+      Serial.printf("  ");
+      // ASCII representation
+      for(int j = 0; j < 16 && (i + j) < sizeof(e); j++) {
+        char c = payload_bytes[i + j];
+        Serial.printf("%c", (c >= 32 && c <= 126) ? c : '.');
+      }
+      Serial.printf("\n");
+    }
+    Serial.printf("*** END HEX DUMP ***\n");
+    
     LMIC_setTxData2(1, (xref2u1_t)&e, sizeof(e), 0);
+    Serial.printf("   LMIC_setTxData2() called with port=1, size=%d\n", sizeof(e));
     Serial.printf("Sending network: %s (%s) Lat: %.6f Lon: %.6f\n", 
                   e.ssid, e.mac, e.latitude, e.longitude);
   } else if (!lorawanJoined) {

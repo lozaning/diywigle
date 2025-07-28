@@ -978,6 +978,7 @@ MAIN_TEMPLATE = '''
                 <th>Location</th>
                 <th>First Seen</th>
                 <th>WiGLE Status</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -1006,12 +1007,32 @@ MAIN_TEMPLATE = '''
                         <span style="color: #e74c3c;">❌ Pending</span>
                     {% endif %}
                 </td>
+                <td>
+                    {% if session.get('logged_in') %}
+                        <button onclick="deleteNetwork('{{ net.id }}')" class="btn btn-danger" style="font-size: 12px; padding: 6px 10px;">🗑️ Delete</button>
+                    {% endif %}
+                </td>
             </tr>
             {% else %}
-            <tr><td colspan="8" style="text-align: center; color: #666;">No networks discovered yet</td></tr>
+            <tr><td colspan="9" style="text-align: center; color: #666;">No networks discovered yet</td></tr>
             {% endfor %}
         </tbody>
     </table>
+
+    <!-- Pagination Controls -->
+    <div class="pagination-container" style="text-align: center; margin: 20px 0;">
+        {% if has_prev %}
+            <a href="?page={{ prev_num }}" class="btn">&laquo; Previous</a>
+        {% endif %}
+        
+        {% if total_pages > 1 %}
+            <span style="margin: 0 20px;">Page {{ current_page }} of {{ total_pages }}</span>
+        {% endif %}
+        
+        {% if has_next %}
+            <a href="?page={{ next_num }}" class="btn">Next &raquo;</a>
+        {% endif %}
+    </div>
 
     <script>
         // Initialize map
@@ -1106,10 +1127,33 @@ MAIN_TEMPLATE = '''
             }
         }
         
-        // Auto-refresh every 30 seconds
-        setInterval(function() {
-            location.reload();
-        }, 30000);
+        // Delete network function
+        function deleteNetwork(networkId) {
+            if (confirm('Are you sure you want to delete this network?')) {
+                fetch('/api/network/' + networkId, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        location.reload();
+                    } else {
+                        alert('Error deleting network: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error deleting network: ' + error);
+                });
+            }
+        }
+
+        // Auto-refresh disabled - was causing browser crashes
+        // setInterval(function() {
+        //     location.reload();
+        // }, 30000);
     </script>
 </body>
 </html>
@@ -1250,7 +1294,32 @@ def get_or_create_device(mac):
 
 @app.route('/')
 def dashboard():
-    recent_networks = WigleData.query.order_by(WigleData.first_seen.desc()).limit(100).all()
+    page = request.args.get('page', 1, type=int)
+    per_page = 100
+    
+    try:
+        # Paginated networks
+        networks_paginated = WigleData.query.order_by(WigleData.first_seen.desc()).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        recent_networks = networks_paginated.items
+        
+        # Pagination info
+        has_prev = networks_paginated.has_prev
+        has_next = networks_paginated.has_next
+        prev_num = networks_paginated.prev_num if has_prev else None
+        next_num = networks_paginated.next_num if has_next else None
+        total_pages = networks_paginated.pages
+        current_page = page
+    except Exception as e:
+        # Fallback if database doesn't exist yet
+        recent_networks = []
+        has_prev = False
+        has_next = False  
+        prev_num = None
+        next_num = None
+        total_pages = 1
+        current_page = 1
     
     # Get latest heartbeat per device
     latest_heartbeats = db.session.query(Heartbeat).filter(
@@ -1281,7 +1350,13 @@ def dashboard():
                                   unique_networks=unique_networks,
                                   networks_with_gps=networks_with_gps,
                                   uploaded_networks=uploaded_networks,
-                                  active_devices=active_devices)
+                                  active_devices=active_devices,
+                                  has_prev=has_prev,
+                                  has_next=has_next,
+                                  prev_num=prev_num,
+                                  next_num=next_num,
+                                  total_pages=total_pages,
+                                  current_page=current_page)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1307,8 +1382,10 @@ def logout():
 def network_locations():
     networks = db.session.query(WigleData).filter(
         WigleData.latitude.isnot(None),
-        WigleData.longitude.isnot(None)
-    ).all()
+        WigleData.longitude.isnot(None),
+        WigleData.latitude.between(-90, 90),  # Valid latitude range
+        WigleData.longitude.between(-180, 180)  # Valid longitude range
+    ).limit(100).all()
     
     return jsonify([{
         'ssid': net.ssid,
@@ -1415,22 +1492,96 @@ def receive_helium_payload():
     Converts Helium payload format to internal WigleData format
     """
     try:
-        data = request.json
-        print(f"📡 Received Helium webhook: {data}")
+        print("=" * 80)
+        print("*** HELIUM WEBHOOK RECEIVED ***")
+        print(f"Request method: {request.method}")
+        print(f"Request headers: {dict(request.headers)}")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Content-Length: {request.content_length}")
+        print("Raw request data:")
+        raw_data = request.get_data()
+        print(f"Raw bytes: {raw_data}")
+        print(f"Raw string: {raw_data.decode('utf-8', errors='replace')}")
+        
+        # Try to parse JSON
+        try:
+            data = request.json
+            print(f"Parsed JSON successfully: {data}")
+        except Exception as json_error:
+            print(f"❌ JSON parsing failed: {json_error}")
+            print("❌ Request is not valid JSON!")
+            return jsonify({"status": "error", "message": f"Invalid JSON: {str(json_error)}"}), 400
+        
+        if data is None:
+            print("❌ request.json returned None")
+            return jsonify({"status": "error", "message": "No JSON data received"}), 400
+        
+        print("*** ANALYZING WEBHOOK STRUCTURE ***")
+        print(f"Top-level keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
         
         # Extract device information
         dev_eui = data.get('dev_eui', 'Unknown')
         device_name = data.get('name', 'LoRaWAN Device')
+        print(f"Device EUI: {dev_eui}")
+        print(f"Device Name: {device_name}")
         
-        # Extract decoded payload
-        decoded = data.get('decoded', {})
-        payload = decoded.get('payload', {})
+        # Look for payload data in multiple possible locations
+        payload = None
+        print("*** SEARCHING FOR PAYLOAD DATA ***")
+        
+        # Check for flat structure (direct keys at top level)
+        if 'ssid' in data and 'mac' in data:
+            print("Found flat structure - creating payload from top-level keys")
+            payload = {
+                'ssid': data.get('ssid'),
+                'mac': data.get('mac'),
+                'rssi': data.get('rssi'),
+                'channel': data.get('channel'),
+                'encryption': data.get('encryption'),
+                'latitude': data.get('latitude'),
+                'longitude': data.get('longitude'),
+                'altitude': data.get('altitude'),
+                'sats': data.get('sats'),
+                'hdop': data.get('hdop')
+            }
+            print(f"Created flat payload: {payload}")
+        
+        # Check for decoded payload (Helium Console format)
+        elif 'decoded' in data:
+            decoded = data['decoded']
+            print(f"Found 'decoded' section: {decoded}")
+            if 'payload' in decoded:
+                payload = decoded['payload']
+                print(f"Found payload in decoded.payload: {payload}")
+        
+        # Check for direct payload
+        elif 'payload' in data:
+            payload = data['payload']
+            print(f"Found direct payload: {payload}")
+        
+        # Check for base64 payload that needs decoding
+        elif 'payload_raw' in data:
+            import base64
+            raw_payload = data['payload_raw']
+            print(f"Found raw payload (base64): {raw_payload}")
+            try:
+                decoded_bytes = base64.b64decode(raw_payload)
+                print(f"Decoded bytes ({len(decoded_bytes)}): {decoded_bytes.hex()}")
+                # This would need custom parsing based on our T-Beam struct
+            except Exception as b64_error:
+                print(f"Base64 decode error: {b64_error}")
         
         if not payload:
-            print("❌ No decoded payload found")
-            return jsonify({"status": "error", "message": "No payload data"}), 400
+            print("❌ No payload found in any expected location")
+            print("Available data structure:")
+            import json
+            print(json.dumps(data, indent=2, default=str))
+            return jsonify({"status": "error", "message": "No payload data found"}), 400
         
-        print(f"📋 Decoded payload: {payload}")
+        print("*** DETAILED PAYLOAD ANALYSIS ***")
+        print(f"Payload type: {type(payload)}")
+        print(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'Not a dict'}")
+        print(f"Full payload: {payload}")
         
         # Map auth_mode from encryption type
         auth_mode_map = {
@@ -1451,17 +1602,37 @@ def receive_helium_payload():
         encryption_type = payload.get('encryption', 0)
         auth_mode = auth_mode_map.get(encryption_type, 'unknown')
         
+        print("*** EXTRACTED WIFI DATA ***")
+        print(f"MAC: {mac}")
+        print(f"SSID: {ssid}")
+        print(f"Encryption Type: {encryption_type}")
+        print(f"Auth Mode: {auth_mode}")
+        print(f"Channel: {payload.get('channel', 0)}")
+        print(f"RSSI: {payload.get('rssi', 0)}")
+        
         # Handle GPS coordinates (Helium uses very small numbers for zero)
         latitude = payload.get('latitude', 0)
         longitude = payload.get('longitude', 0)
         
+        print("*** GPS COORDINATE PROCESSING ***")
+        print(f"Raw latitude: {latitude} (type: {type(latitude)})")
+        print(f"Raw longitude: {longitude} (type: {type(longitude)})")
+        
         # If coordinates are extremely small (< 0.001), treat as null/no GPS
         if abs(latitude) < 0.001:
+            print("Latitude too small, setting to None")
             latitude = None
         if abs(longitude) < 0.001:
+            print("Longitude too small, setting to None")
             longitude = None
             
         altitude = payload.get('altitude', 0) if payload.get('altitude', 0) != 0 else None
+        
+        print(f"Final latitude: {latitude}")
+        print(f"Final longitude: {longitude}")
+        print(f"Altitude: {altitude}")
+        print(f"Satellites: {payload.get('sats', 0)}")
+        print(f"HDOP: {payload.get('hdop', None)}")
         
         # Create WigleData entry
         entry = WigleData(
@@ -1477,37 +1648,59 @@ def receive_helium_payload():
             accuracy=payload.get('hdop', None)  # Using HDOP as accuracy approximation
         )
         
+        print("*** DATABASE OPERATIONS ***")
+        print("Adding WigleData entry to database...")
         db.session.add(entry)
         
         # Also create/update device record using DevEUI as MAC
+        print(f"Creating/updating device record for {dev_eui}...")
         device = get_or_create_device(dev_eui)
         
         # Create heartbeat from LoRaWAN metadata if available
         hotspots = data.get('hotspots', [])
+        snr_value = 0
+        
+        print(f"Found {len(hotspots)} hotspots in webhook data")
         if hotspots:
             hotspot = hotspots[0]  # Use first hotspot
-            hb = Heartbeat(
-                mac=dev_eui,
-                timestamp=datetime.now(timezone.utc),
-                battery=0,  # LoRaWAN doesn't provide battery info in this payload
-                solar_voltage=None,
-                signal_quality=hotspot.get('snr', 0),  # Use SNR as signal quality
-                free_heap=None,
-                networks_cached=None,
-                gps_active=(latitude is not None and longitude is not None),
-                gps_satellites=payload.get('sats', 0)
-            )
-            db.session.add(hb)
+            snr_value = hotspot.get('snr', 0)
+            print(f"Using first hotspot: {hotspot}")
+        elif 'snr' in data:
+            snr_value = data.get('snr', 0)
+            print(f"Using flat SNR value: {snr_value}")
         
+        hb = Heartbeat(
+            mac=dev_eui,
+            timestamp=datetime.now(timezone.utc),
+            battery=0,  # LoRaWAN doesn't provide battery info in this payload
+            solar_voltage=None,
+            signal_quality=snr_value,  # Use SNR as signal quality
+            free_heap=None,
+            networks_cached=None,
+            gps_active=(latitude is not None and longitude is not None),
+            gps_satellites=payload.get('sats', 0)
+        )
+        print("Adding heartbeat to database...")
+        db.session.add(hb)
+        
+        print("Committing database transaction...")
         db.session.commit()
         
-        print(f"✅ Stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
+        print(f"✅ Successfully stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
+        print("=" * 80)
         
         return jsonify({"status": "success", "message": "Data stored successfully"}), 200
         
     except Exception as e:
-        print(f"❌ Error processing Helium payload: {str(e)}")
-        print(f"📋 Raw request data: {request.get_data()}")
+        print("=" * 80)
+        print(f"❌ CRITICAL ERROR processing Helium payload: {str(e)}")
+        print(f"Exception type: {type(e).__name__}")
+        import traceback
+        print("Full traceback:")
+        traceback.print_exc()
+        print(f"Raw request data: {request.get_data()}")
+        print(f"Request headers: {dict(request.headers)}")
+        print("=" * 80)
         db.session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1707,6 +1900,21 @@ def test_wigle_connection():
     except requests.exceptions.RequestException as e:
         return jsonify({"status": "error", "message": f"Connection failed: {str(e)}"}), 400
     except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/network/<int:network_id>', methods=['DELETE'])
+@login_required
+def delete_network(network_id):
+    try:
+        network = WigleData.query.get_or_404(network_id)
+        db.session.delete(network)
+        db.session.commit()
+        return jsonify({
+            "status": "success", 
+            "message": f"Network {network.mac} deleted successfully"
+        })
+    except Exception as e:
+        db.session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/upload_to_wigle', methods=['POST'])
