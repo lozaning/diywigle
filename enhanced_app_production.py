@@ -7,7 +7,8 @@ import os
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///wigle_data.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'production-key-change-for-security'
+# Use environment variable for SECRET_KEY in production, fallback to development key
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'dev-key-change-in-production')
 
 db = SQLAlchemy(app)
 
