@@ -58,7 +58,7 @@ This is a **DIY WiFi Wardriving System** with Flask web app and ESP32 devices fo
 - **File**: `enhanced_app_production.py`
 - **Database**: SQLite (`wigle_data.db`)
 - **Port**: 5001
-- **Auth**: username `lozaning`, password `oneill`
+- **Auth**: username `Admin`, password `Wigler`
 
 ### Hardware Devices  
 - **LilyGO T-SIM7000G**: Cellular-enabled scanner

@@ -134,7 +134,7 @@ systemctl status wigle-server.service
 
 Your server should now be accessible at:
 - **Local network:** `http://<container-ip>:5001`
-- **Login:** `lozaning` / `oneill`
+- **Login:** `Admin` / `Wigler`
 
 **Check if it's running:**
 ```bash
@@ -377,7 +377,7 @@ systemctl start wigle-server.service
 
 echo "Deployment complete!"
 echo "Access at: http://$(hostname -I | awk '{print $1}'):5001"
-echo "Login: lozaning / oneill"
+echo "Login: Admin / Wigler"
 ```
 
 Make executable and run:

@@ -6,58 +6,52 @@
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
 # Configuration
 INSTALL_DIR="/opt/wigle-server"
 SERVICE_NAME="wigle-server"
 REPO_URL="https://github.com/lozaning/diywigle.git"
 REPO_BRANCH="main"
 
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     WiFi Wardriving Server - Automated Installer        ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+echo "=============================================================="
+echo "     WiFi Wardriving Server - Automated Installer"
+echo "=============================================================="
 echo ""
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}✗ Please run as root or with sudo${NC}"
+    echo "ERROR: Please run as root or with sudo"
     exit 1
 fi
 
-echo -e "${YELLOW}► Detecting operating system...${NC}"
+echo "Detecting operating system..."
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS=$ID
     VERSION=$VERSION_ID
-    echo -e "${GREEN}✓ Detected: $PRETTY_NAME${NC}"
+    echo "Detected: $PRETTY_NAME"
 else
-    echo -e "${RED}✗ Cannot detect operating system${NC}"
+    echo "ERROR: Cannot detect operating system"
     exit 1
 fi
 
 # Verify supported OS
 case $OS in
     ubuntu|debian)
-        echo -e "${GREEN}✓ Supported OS detected${NC}"
+        echo "Supported OS detected"
         ;;
     *)
-        echo -e "${YELLOW}⚠ Warning: This installer is tested on Ubuntu/Debian${NC}"
-        echo -e "${YELLOW}  Your OS: $OS - proceeding anyway...${NC}"
+        echo "Warning: This installer is tested on Ubuntu/Debian"
+        echo "Your OS: $OS - proceeding anyway..."
         ;;
 esac
 
 # Update system
 echo ""
-echo -e "${YELLOW}► Updating package lists...${NC}"
+echo "Updating package lists..."
 apt update -qq
 
 # Install dependencies
-echo -e "${YELLOW}► Installing dependencies...${NC}"
+echo "Installing dependencies..."
 DEBIAN_FRONTEND=noninteractive apt install -y -qq \
     python3 \
     python3-pip \
@@ -65,45 +59,45 @@ DEBIAN_FRONTEND=noninteractive apt install -y -qq \
     git \
     curl \
     > /dev/null 2>&1
-echo -e "${GREEN}✓ Dependencies installed${NC}"
+echo "Dependencies installed"
 
 # Create installation directory
 echo ""
-echo -e "${YELLOW}► Creating installation directory...${NC}"
+echo "Creating installation directory..."
 if [ -d "$INSTALL_DIR" ]; then
-    echo -e "${YELLOW}⚠ Directory $INSTALL_DIR already exists${NC}"
+    echo "Warning: Directory $INSTALL_DIR already exists"
     read -p "Remove and reinstall? (y/N) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         systemctl stop $SERVICE_NAME 2>/dev/null || true
         rm -rf $INSTALL_DIR
-        echo -e "${GREEN}✓ Removed existing installation${NC}"
+        echo "Removed existing installation"
     else
-        echo -e "${RED}✗ Installation cancelled${NC}"
+        echo "Installation cancelled"
         exit 1
     fi
 fi
 
 mkdir -p $INSTALL_DIR
-echo -e "${GREEN}✓ Directory created: $INSTALL_DIR${NC}"
+echo "Directory created: $INSTALL_DIR"
 
 # Clone repository
 echo ""
-echo -e "${YELLOW}► Cloning repository...${NC}"
+echo "Cloning repository..."
 git clone -b $REPO_BRANCH $REPO_URL $INSTALL_DIR --quiet
-echo -e "${GREEN}✓ Repository cloned${NC}"
+echo "Repository cloned"
 
 # Install Python dependencies
 echo ""
-echo -e "${YELLOW}► Installing Python packages...${NC}"
+echo "Installing Python packages..."
 cd $INSTALL_DIR
 pip3 install -q flask flask-sqlalchemy --break-system-packages 2>/dev/null || \
 pip3 install -q flask flask-sqlalchemy
-echo -e "${GREEN}✓ Python packages installed${NC}"
+echo "Python packages installed"
 
 # Create systemd service
 echo ""
-echo -e "${YELLOW}► Creating systemd service...${NC}"
+echo "Creating systemd service..."
 cat > /etc/systemd/system/$SERVICE_NAME.service << 'EOF'
 [Unit]
 Description=WiFi Wardriving Production Server
@@ -126,11 +120,11 @@ SyslogIdentifier=wigle-server
 [Install]
 WantedBy=multi-user.target
 EOF
-echo -e "${GREEN}✓ Systemd service created${NC}"
+echo "Systemd service created"
 
 # Enable and start service
 echo ""
-echo -e "${YELLOW}► Enabling and starting service...${NC}"
+echo "Enabling and starting service..."
 systemctl daemon-reload
 systemctl enable $SERVICE_NAME.service --quiet
 systemctl start $SERVICE_NAME.service
@@ -140,10 +134,10 @@ sleep 2
 
 # Check if service is running
 if systemctl is-active --quiet $SERVICE_NAME.service; then
-    echo -e "${GREEN}✓ Service started successfully${NC}"
+    echo "Service started successfully"
 else
-    echo -e "${RED}✗ Service failed to start${NC}"
-    echo -e "${YELLOW}  Check logs: journalctl -u $SERVICE_NAME.service -n 50${NC}"
+    echo "ERROR: Service failed to start"
+    echo "Check logs: journalctl -u $SERVICE_NAME.service -n 50"
     exit 1
 fi
 
@@ -152,7 +146,7 @@ IP_ADDR=$(hostname -I | awk '{print $1}')
 
 # Create convenience scripts
 echo ""
-echo -e "${YELLOW}► Creating management scripts...${NC}"
+echo "Creating management scripts..."
 
 # Status script
 cat > $INSTALL_DIR/status.sh << 'EOF'
@@ -176,34 +170,34 @@ echo "Service restarted"
 EOF
 chmod +x $INSTALL_DIR/restart.sh
 
-echo -e "${GREEN}✓ Management scripts created${NC}"
+echo "Management scripts created"
 
 # Final output
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║            Installation Complete! 🎉                     ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
+echo "=============================================================="
+echo "            Installation Complete!"
+echo "=============================================================="
 echo ""
-echo -e "${GREEN}📍 Access your server at:${NC}"
-echo -e "   ${YELLOW}http://$IP_ADDR:5001${NC}"
+echo "Access your server at:"
+echo "   http://$IP_ADDR:5001"
 echo ""
-echo -e "${GREEN}🔐 Default login credentials:${NC}"
-echo -e "   ${YELLOW}Username: lozaning${NC}"
-echo -e "   ${YELLOW}Password: oneill${NC}"
+echo "Default login credentials:"
+echo "   Username: Admin"
+echo "   Password: Wigler"
 echo ""
-echo -e "${GREEN}📊 Useful commands:${NC}"
-echo -e "   ${YELLOW}View status:  systemctl status wigle-server${NC}"
-echo -e "   ${YELLOW}View logs:    journalctl -u wigle-server -f${NC}"
-echo -e "   ${YELLOW}Restart:      systemctl restart wigle-server${NC}"
-echo -e "   ${YELLOW}Stop:         systemctl stop wigle-server${NC}"
+echo "Useful commands:"
+echo "   View status:  systemctl status wigle-server"
+echo "   View logs:    journalctl -u wigle-server -f"
+echo "   Restart:      systemctl restart wigle-server"
+echo "   Stop:         systemctl stop wigle-server"
 echo ""
-echo -e "${GREEN}📁 Installation directory:${NC}"
-echo -e "   ${YELLOW}$INSTALL_DIR${NC}"
+echo "Installation directory:"
+echo "   $INSTALL_DIR"
 echo ""
-echo -e "${GREEN}💡 Quick scripts available:${NC}"
-echo -e "   ${YELLOW}$INSTALL_DIR/status.sh  - Check service status${NC}"
-echo -e "   ${YELLOW}$INSTALL_DIR/logs.sh    - View live logs${NC}"
-echo -e "   ${YELLOW}$INSTALL_DIR/restart.sh - Restart service${NC}"
+echo "Quick scripts available:"
+echo "   $INSTALL_DIR/status.sh  - Check service status"
+echo "   $INSTALL_DIR/logs.sh    - View live logs"
+echo "   $INSTALL_DIR/restart.sh - Restart service"
 echo ""
-echo -e "${YELLOW}⚠️  Remember to change the default password in production!${NC}"
+echo "Remember to change the default password in production!"
 echo ""

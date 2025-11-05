@@ -16,7 +16,7 @@ The system is designed for **defensive security research** - mapping WiFi networ
 ### Web Application (Flask)
 - **Database**: SQLite (`wigle_data.db`) with models for WiFi networks, device heartbeats, device management, and settings
 - **Frontend**: Embedded HTML templates with interactive maps using Leaflet.js
-- **Authentication**: Simple login system (username: `lozaning`, password: `oneill`)
+- **Authentication**: Simple login system (username: `Admin`, password: `Wigler`)
 - **API Integration**: WiGLE.net upload functionality for contributing to the public wardriving database
 
 ### Hardware Devices
