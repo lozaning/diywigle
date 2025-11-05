@@ -31,8 +31,8 @@ python3 enhanced_app_production.py
 After installation completes, access the dashboard at `http://your-server-ip:5001`
 
 **Default credentials:**
-- Username: `lozaning`
-- Password: `oneill`
+- Username: `Admin`
+- Password: `Wigler`
 
 ⚠️ **Important:** Change the default password in production environments!
 

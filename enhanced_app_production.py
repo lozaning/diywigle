@@ -1760,7 +1760,7 @@ def login():
         password = request.form['password']
         
         # Authentication
-        if username == 'lozaning' and password == 'oneill':
+        if username == 'Admin' and password == 'Wigler':
             session['logged_in'] = True
             return redirect(url_for('dashboard'))
         else:
@@ -2620,7 +2620,7 @@ if __name__ == '__main__':
     logger.info("Starting WiFi Wardriving Production Server...")
     logger.info("Production mode - accessible on port 5001")
     logger.info("Dashboard: http://localhost:5001")
-    logger.info("Login: lozaning / oneill")
+    logger.info("Login: Admin / Wigler")
     logger.info("")
 
     app.run(host='0.0.0.0', port=5001, debug=False)

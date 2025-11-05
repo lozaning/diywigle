@@ -42,8 +42,8 @@
 ### 6. Network Delete Function Not Working
 **Symptoms:** Delete buttons don't appear or don't work
 **Cause:** User not logged in or missing authentication
-**Solution:** 
-- Login with admin credentials (lozaning/oneill)
+**Solution:**
+- Login with admin credentials (Admin/Wigler)
 - Check Flask session handling
 
 ## Debugging Steps

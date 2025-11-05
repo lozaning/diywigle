@@ -114,5 +114,5 @@ echo -e "${GREEN}║            Installation Complete! 🎉                     
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${GREEN}📍 Access: ${YELLOW}http://$IP_ADDR:5001${NC}"
-echo -e "${GREEN}🔐 Login:  ${YELLOW}lozaning / oneill${NC}"
+echo -e "${GREEN}🔐 Login:  ${YELLOW}Admin / Wigler${NC}"
 echo ""
