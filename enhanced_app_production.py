@@ -3,11 +3,19 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
 from functools import wraps
 import os
+import logging
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///wigle_data.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'production-key-change-for-security'
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 db = SQLAlchemy(app)
 
@@ -1812,42 +1820,42 @@ def network_stats():
         start_time_str = request.args.get('start_time')
         end_time_str = request.args.get('end_time')
         
-        print(f"📊 Network stats request: view_type={view_type}, time_scale={time_scale}, start_time={start_time_str}, end_time={end_time_str}")
-        
+        logger.info(f"Network stats request: view_type={view_type}, time_scale={time_scale}, start_time={start_time_str}, end_time={end_time_str}")
+
         # Build query with time filtering
         query = db.session.query(WigleData).filter(
             WigleData.latitude.isnot(None),
             WigleData.longitude.isnot(None)
         )
-        
+
         # Parse and apply time filters if provided
         filter_start_time = None
         filter_end_time = None
-        
+
         if start_time_str:
             try:
                 filter_start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
                 query = query.filter(WigleData.first_seen >= filter_start_time)
-                print(f"📊 Filtering from: {filter_start_time}")
+                logger.info(f"Filtering from: {filter_start_time}")
             except ValueError as e:
-                print(f"⚠️ Invalid start_time format: {e}")
-        
+                logger.warning(f"Invalid start_time format: {e}")
+
         if end_time_str:
             try:
                 filter_end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
                 query = query.filter(WigleData.first_seen <= filter_end_time)
-                print(f"📊 Filtering to: {filter_end_time}")
+                logger.info(f"Filtering to: {filter_end_time}")
             except ValueError as e:
-                print(f"⚠️ Invalid end_time format: {e}")
-        
+                logger.warning(f"Invalid end_time format: {e}")
+
         networks = query.order_by(WigleData.first_seen.asc()).all()
-        
-        print(f"📊 Found {len(networks)} networks with GPS data (after time filtering)")
-        
+
+        logger.info(f"Found {len(networks)} networks with GPS data (after time filtering)")
+
         if not networks:
-            print("📊 No networks found, returning empty array")
+            logger.info("No networks found, returning empty array")
             return jsonify([])
-        
+
         # Determine the actual time range for bucketing
         if filter_start_time and filter_end_time:
             # Use the specified range
@@ -1865,21 +1873,21 @@ def network_stats():
             # Use full data range
             start_time = networks[0].first_seen
             end_time = networks[-1].first_seen
-        
-        print(f"📊 Time range: {start_time} to {end_time}")
-        
+
+        logger.info(f"Time range: {start_time} to {end_time}")
+
         # Generate time buckets
         time_buckets = []
         current_time = start_time
         while current_time <= end_time:
             time_buckets.append(current_time)
             current_time += timedelta(minutes=time_scale)
-        
+
         # If we don't have the final bucket, add it
         if time_buckets[-1] < end_time:
             time_buckets.append(end_time + timedelta(minutes=time_scale))
-        
-        print(f"📊 Created {len(time_buckets)} time buckets")
+
+        logger.info(f"Created {len(time_buckets)} time buckets")
         
         results = []
         unique_networks_seen = set()
@@ -1908,11 +1916,11 @@ def network_stats():
                 'label': bucket_start.strftime('%m/%d %H:%M')  # Keep this for fallback, but we'll use timestamp in JS
             })
         
-        print(f"📊 Returning {len(results)} data points")
+        logger.info(f"Returning {len(results)} data points")
         return jsonify(results)
-        
+
     except Exception as e:
-        print(f"❌ Error in network_stats: {str(e)}")
+        logger.error(f"Error in network_stats: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -1935,8 +1943,8 @@ def clear_database():
 @app.route('/api/wigle_data', methods=['POST'])
 def receive_data():
     data = request.json
-    print(f"📡 Received single network: {data.get('mac', 'Unknown')}")
-    
+    logger.info(f"Received single network: {data.get('mac', 'Unknown')}")
+
     entry = WigleData(
         mac=data.get('mac', 'Unknown'),
         ssid=data.get('ssid', 'Unknown'),
@@ -1958,8 +1966,8 @@ def receive_data():
 def receive_batch():
     data = request.json
     networks = data.get('networks', [])
-    
-    print(f"📦 Received batch: {len(networks)} networks")
+
+    logger.info(f"Received batch: {len(networks)} networks")
     
     # Try to determine device source (from cellular device)
     device_mac = data.get('device_mac')  # If provided in batch
@@ -1997,7 +2005,7 @@ def receive_batch():
             device_source=device_source_name
         )
         entries.append(entry)
-        print(f"  📍 {net.get('ssid', 'Hidden')} ({net.get('mac', 'Unknown')}) from {device_source_name}")
+        logger.info(f"  Network: {net.get('ssid', 'Hidden')} ({net.get('mac', 'Unknown')}) from {device_source_name}")
 
     db.session.add_all(entries)
     db.session.commit()
@@ -2009,8 +2017,8 @@ def receive_batch():
 def receive_heartbeat():
     data = request.json
     mac = data.get('mac') or data.get('device_mac')
-    print(f"💓 Heartbeat from {mac}")
-    
+    logger.info(f"Heartbeat from {mac}")
+
     # Create or update device record
     get_or_create_device(mac)
     
@@ -2036,51 +2044,51 @@ def receive_helium_payload():
     Converts Helium payload format to internal WigleData format
     """
     try:
-        print("=" * 80)
-        print("*** HELIUM WEBHOOK RECEIVED ***")
-        print(f"Request method: {request.method}")
-        print(f"Request headers: {dict(request.headers)}")
-        print(f"Content-Type: {request.content_type}")
-        print(f"Content-Length: {request.content_length}")
-        print("Raw request data:")
+        logger.info("=" * 80)
+        logger.info("HELIUM WEBHOOK RECEIVED")
+        logger.debug(f"Request method: {request.method}")
+        logger.debug(f"Request headers: {dict(request.headers)}")
+        logger.debug(f"Content-Type: {request.content_type}")
+        logger.debug(f"Content-Length: {request.content_length}")
+        logger.debug("Raw request data:")
         raw_data = request.get_data()
-        print(f"Raw bytes: {raw_data}")
-        print(f"Raw string: {raw_data.decode('utf-8', errors='replace')}")
-        
+        logger.debug(f"Raw bytes: {raw_data}")
+        logger.debug(f"Raw string: {raw_data.decode('utf-8', errors='replace')}")
+
         # Try to parse JSON
         try:
             data = request.json
-            print(f"Parsed JSON successfully: {data}")
+            logger.debug(f"Parsed JSON successfully: {data}")
         except Exception as json_error:
-            print(f"❌ JSON parsing failed: {json_error}")
-            print("❌ Request is not valid JSON!")
+            logger.error(f"JSON parsing failed: {json_error}")
+            logger.error("Request is not valid JSON!")
             return jsonify({"status": "error", "message": f"Invalid JSON: {str(json_error)}"}), 400
-        
+
         if data is None:
-            print("❌ request.json returned None")
+            logger.error("request.json returned None")
             return jsonify({"status": "error", "message": "No JSON data received"}), 400
-        
-        print("*** ANALYZING WEBHOOK STRUCTURE ***")
-        print(f"Top-level keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
-        
+
+        logger.debug("ANALYZING WEBHOOK STRUCTURE")
+        logger.debug(f"Top-level keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+
         # Show complete webhook structure for debugging signal data location
         import json
-        print("*** COMPLETE WEBHOOK STRUCTURE ***")
-        print(json.dumps(data, indent=2, default=str))
-        
+        logger.debug("COMPLETE WEBHOOK STRUCTURE")
+        logger.debug(json.dumps(data, indent=2, default=str))
+
         # Extract device information
         dev_eui = data.get('dev_eui', 'Unknown')
         device_name = data.get('name', 'LoRaWAN Device')
-        print(f"Device EUI: {dev_eui}")
-        print(f"Device Name: {device_name}")
-        
+        logger.info(f"Device EUI: {dev_eui}")
+        logger.info(f"Device Name: {device_name}")
+
         # Look for payload data in multiple possible locations
         payload = None
-        print("*** SEARCHING FOR PAYLOAD DATA ***")
+        logger.debug("SEARCHING FOR PAYLOAD DATA")
         
         # Check for flat structure (direct keys at top level)
         if 'ssid' in data and 'mac' in data:
-            print("Found flat structure - creating payload from top-level keys")
+            logger.debug("Found flat structure - creating payload from top-level keys")
             payload = {
                 'ssid': data.get('ssid'),
                 'mac': data.get('mac'),
@@ -2093,41 +2101,41 @@ def receive_helium_payload():
                 'sats': data.get('sats'),
                 'hdop': data.get('hdop')
             }
-            print(f"Created flat payload: {payload}")
-        
+            logger.debug(f"Created flat payload: {payload}")
+
         # Check for decoded payload (Helium Console format)
         elif 'decoded' in data:
             decoded = data['decoded']
-            print(f"Found 'decoded' section: {decoded}")
+            logger.debug(f"Found 'decoded' section: {decoded}")
             if 'payload' in decoded:
                 payload = decoded['payload']
-                print(f"Found payload in decoded.payload: {payload}")
-        
+                logger.debug(f"Found payload in decoded.payload: {payload}")
+
         # Check for direct payload
         elif 'payload' in data:
             payload = data['payload']
-            print(f"Found direct payload: {payload}")
-        
+            logger.debug(f"Found direct payload: {payload}")
+
         # Check for base64 payload that needs decoding
         elif 'payload_raw' in data:
             import base64
             raw_payload = data['payload_raw']
-            print(f"Found raw payload (base64): {raw_payload}")
+            logger.debug(f"Found raw payload (base64): {raw_payload}")
             try:
                 decoded_bytes = base64.b64decode(raw_payload)
-                print(f"Decoded bytes ({len(decoded_bytes)}): {decoded_bytes.hex()}")
+                logger.debug(f"Decoded bytes ({len(decoded_bytes)}): {decoded_bytes.hex()}")
                 # This would need custom parsing based on our T-Beam struct
             except Exception as b64_error:
-                print(f"Base64 decode error: {b64_error}")
-        
+                logger.error(f"Base64 decode error: {b64_error}")
+
         if not payload:
-            print("❌ No payload found in any expected location")
-            print("Available data structure:")
+            logger.error("No payload found in any expected location")
+            logger.debug("Available data structure:")
             import json
-            print(json.dumps(data, indent=2, default=str))
+            logger.debug(json.dumps(data, indent=2, default=str))
             return jsonify({"status": "error", "message": "No payload data found"}), 400
-        
-        print("*** DETAILED PAYLOAD ANALYSIS ***")
+
+        logger.debug("DETAILED PAYLOAD ANALYSIS")
         print(f"Payload type: {type(payload)}")
         print(f"Payload keys: {list(payload.keys()) if isinstance(payload, dict) else 'Not a dict'}")
         print(f"Full payload: {payload}")
@@ -2251,27 +2259,27 @@ def receive_helium_payload():
             gps_active=(latitude is not None and longitude is not None),
             gps_satellites=gps_satellites  # Using device health GPS satellite count
         )
-        print(f"Creating heartbeat with battery: {battery_voltage}V, SNR: {lorawan_snr}dB, GPS sats: {gps_satellites}")
+        logger.info(f"Creating heartbeat with battery: {battery_voltage}V, SNR: {lorawan_snr}dB, GPS sats: {gps_satellites}")
         db.session.add(hb)
-        
-        print("Committing database transaction...")
+
+        logger.debug("Committing database transaction...")
         db.session.commit()
-        
-        print(f"✅ Successfully stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
-        print("=" * 80)
-        
+
+        logger.info(f"Successfully stored LoRaWAN network: {ssid} ({mac}) from device {device_name}")
+        logger.info("=" * 80)
+
         return jsonify({"status": "success", "message": "Data stored successfully"}), 200
-        
+
     except Exception as e:
-        print("=" * 80)
-        print(f"❌ CRITICAL ERROR processing Helium payload: {str(e)}")
-        print(f"Exception type: {type(e).__name__}")
+        logger.error("=" * 80)
+        logger.error(f"CRITICAL ERROR processing Helium payload: {str(e)}")
+        logger.error(f"Exception type: {type(e).__name__}")
         import traceback
-        print("Full traceback:")
+        logger.error("Full traceback:")
         traceback.print_exc()
-        print(f"Raw request data: {request.get_data()}")
-        print(f"Request headers: {dict(request.headers)}")
-        print("=" * 80)
+        logger.debug(f"Raw request data: {request.get_data()}")
+        logger.debug(f"Request headers: {dict(request.headers)}")
+        logger.error("=" * 80)
         db.session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -2586,7 +2594,7 @@ def update_existing_data():
         # Count records without device_source
         null_count = WigleData.query.filter(WigleData.device_source.is_(None)).count()
         if null_count > 0:
-            print(f"🔄 Updating {null_count} existing records without device source...")
+            logger.info(f"Updating {null_count} existing records without device source...")
             
             # Update all NULL device_source records to "Legacy Data"
             WigleData.query.filter(WigleData.device_source.is_(None)).update(
@@ -2594,25 +2602,25 @@ def update_existing_data():
                 synchronize_session=False
             )
             db.session.commit()
-            print(f"✅ Updated {null_count} records with default device source")
+            logger.info(f"Updated {null_count} records with default device source")
         else:
-            print("✅ All records already have device source information")
+            logger.info("All records already have device source information")
     except Exception as e:
-        print(f"⚠️ Error updating existing data: {e}")
+        logger.warning(f"Error updating existing data: {e}")
         db.session.rollback()
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-        print("📊 Database tables created/verified")
-        
+        logger.info("Database tables created/verified")
+
         # Update existing data after schema changes
         update_existing_data()
-    
-    print("🚀 Starting WiFi Wardriving Production Server...")
-    print("📍 Production mode - accessible on port 5001")
-    print("🔗 Dashboard: http://localhost:5001")
-    print("🔐 Login: lozaning / oneill")
-    print("")
-    
+
+    logger.info("Starting WiFi Wardriving Production Server...")
+    logger.info("Production mode - accessible on port 5001")
+    logger.info("Dashboard: http://localhost:5001")
+    logger.info("Login: lozaning / oneill")
+    logger.info("")
+
     app.run(host='0.0.0.0', port=5001, debug=False)
