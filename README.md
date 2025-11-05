@@ -4,9 +4,28 @@ A comprehensive WiFi network mapping and wardriving system designed for defensiv
 
 ## 🚀 Quick Install (Ubuntu/Debian)
 
+### For Public Repository:
 **One-line installation:**
 ```bash
 wget -O - https://raw.githubusercontent.com/lozaning/diywigle/main/install.sh | sudo bash
+```
+
+### For Private Repository:
+**Method 1: Clone and run locally**
+```bash
+git clone https://github.com/lozaning/diywigle.git /opt/wigle-server
+cd /opt/wigle-server
+chmod +x install.sh
+sudo ./install.sh
+```
+
+**Method 2: Quick manual install**
+```bash
+sudo apt update && sudo apt install -y python3 python3-pip git
+git clone https://github.com/lozaning/diywigle.git /opt/wigle-server
+cd /opt/wigle-server
+pip3 install flask flask-sqlalchemy --break-system-packages
+python3 enhanced_app_production.py
 ```
 
 After installation completes, access the dashboard at `http://your-server-ip:5001`
